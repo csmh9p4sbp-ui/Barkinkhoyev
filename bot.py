@@ -22,12 +22,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-# --- Функция отправки нового слова ---
+# --- Отправка нового слова ---
 async def send_new_word(chat_id, bot):
     today = datetime.now()
-    due = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='D') <= today)]
+    due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='D') <= today)]
     new_words = df[~df['learned']]
-    candidates = pd.concat([due, new_words])
+    candidates = pd.concat([due_words, new_words])
 
     if candidates.empty:
         await bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
@@ -45,7 +45,7 @@ async def send_new_word(chat_id, bot):
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_new_word(update.effective_chat.id, context.bot)
 
-# --- Callback для кнопок ---
+# --- Обработка кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -64,11 +64,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
+    # Удаляем старое сообщение
     try:
         await query.message.delete()
     except:
         pass
 
+    # Отправляем новое слово
     await send_new_word(query.message.chat_id, context.bot)
 
 # --- /progress ---
@@ -76,11 +78,11 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned = df['learned'].sum()
     total = len(df)
     remaining = total - learned
-    pct = int((learned / total) * 100) if total > 0 else 0
+    percent = int((learned / total) * 100) if total > 0 else 0
     await update.message.reply_text(
         f"Вы выучили {learned} слов из {total}.\n"
         f"Осталось выучить ещё {remaining}.\n"
-        f"Прогресс: {pct}% освоено ✅"
+        f"Прогресс: {percent}% освоено ✅"
     )
 
 # --- /learned ---
@@ -94,7 +96,7 @@ async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{r['слово']} — {r['كلمة']}\n"
     await update.message.reply_text(text)
 
-# --- Настройка бота ---
+# --- Настройка приложения ---
 app = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
 app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
