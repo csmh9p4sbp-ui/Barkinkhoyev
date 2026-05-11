@@ -81,11 +81,11 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned = df['learned'].sum()
     total = len(df)
     remaining = total - learned
-    pct = int((learned / total) * 100) if total > 0 else 0
+    percent = int((learned / total) * 100) if total > 0 else 0
     await update.message.reply_text(
         f"Вы выучили {learned} слов из {total}.\n"
         f"Осталось выучить ещё {remaining}.\n"
-        f"Прогресс: {pct}% освоено ✅"
+        f"Прогресс: {percent}% освоено ✅"
     )
 
 # --- /learned ---
@@ -99,12 +99,24 @@ async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{r['слово']} — {r['كلمة']}\n"
     await update.message.reply_text(text)
 
+# --- /reset ---
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global df
+    df['learned'] = False
+    df['last_review'] = pd.NaT
+    df['interval'] = 1
+    df.to_csv('words.csv', index=False, encoding='utf-8-sig')
+    await update.message.reply_text(
+        "Все слова обнулены! Теперь вы можете учить их заново. 📖"
+    )
+
 # --- Настройка приложения ---
 app = ApplicationBuilder().token(token).build()
 app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
+app.add_handler(CommandHandler('reset', reset))  # <-- добавлена новая команда
 app.add_handler(CallbackQueryHandler(button_handler))
 
 # --- Запуск ---
