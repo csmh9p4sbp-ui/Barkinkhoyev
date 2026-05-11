@@ -21,11 +21,22 @@ token = os.environ.get('BOT_TOKEN')
 if not token:
     raise ValueError("Ошибка: переменная BOT_TOKEN не установлена!")
 
-# --- Приветствие ---
+# --- Приветствие с кнопками ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
+    greeting = (
+        "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖\n\n"
+        "Для начала изучения нажмите кнопку «Новое слово» ниже. "
+        "После этого можно отслеживать прогресс, просматривать выученные слова и при необходимости начать заново."
     )
+
+    buttons = [
+        [InlineKeyboardButton("Новое слово", callback_data="cmd_word")],
+        [InlineKeyboardButton("Прогресс", callback_data="cmd_progress")],
+        [InlineKeyboardButton("Выученные", callback_data="cmd_learned")],
+        [InlineKeyboardButton("Начать изучать заново", callback_data="cmd_reset")],
+    ]
+    markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(greeting, reply_markup=markup)
 
 # --- Отправка нового слова ---
 async def send_new_word(chat_id, bot):
@@ -55,26 +66,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    idx = int(data.split("_")[1])
     today = datetime.now().replace(microsecond=0)
 
-    if data.startswith("learned"):
-        df.at[idx, 'learned'] = True
-        df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = 1
-    elif data.startswith("remember"):
-        old_interval = df.at[idx, 'interval']
-        df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = min(old_interval * 2, 30)
+    # Кнопки изучения слова
+    if data.startswith("learned_") or data.startswith("remember_"):
+        idx = int(data.split("_")[1])
+        if data.startswith("learned"):
+            df.at[idx, 'learned'] = True
+            df.at[idx, 'last_review'] = today
+            df.at[idx, 'interval'] = 1
+        elif data.startswith("remember"):
+            old_interval = df.at[idx, 'interval']
+            df.at[idx, 'last_review'] = today
+            df.at[idx, 'interval'] = min(old_interval * 2, 30)
+        df.to_csv('words.csv', index=False, encoding='utf-8-sig')
+        try:
+            await query.message.delete()
+        except:
+            pass
+        await send_new_word(query.message.chat_id, context.bot)
 
-    df.to_csv('words.csv', index=False, encoding='utf-8-sig')
-
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-    await send_new_word(query.message.chat_id, context.bot)
+    # Кнопки команд
+    elif data == "cmd_word":
+        await send_new_word(query.message.chat_id, context.bot)
+    elif data == "cmd_progress":
+        await progress(update, context)
+    elif data == "cmd_learned":
+        await learned_list(update, context)
+    elif data == "cmd_reset":
+        await reset(update, context)
 
 # --- /progress ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,7 +136,7 @@ app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
-app.add_handler(CommandHandler('reset', reset))  # <-- добавлена новая команда
+app.add_handler(CommandHandler('reset', reset))
 app.add_handler(CallbackQueryHandler(button_handler))
 
 # --- Запуск ---
