@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import matplotlib.pyplot as plt
@@ -61,17 +61,6 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plt.close()
     await update.message.reply_photo(open('progress.png','rb'))
 
-# --- Напоминания пользователям ---
-async def remind_users(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now()
-    for user_id, last_seen in user_last_seen.items():
-        if now - last_seen >= timedelta(days=3):
-            try:
-                await context.bot.send_message(chat_id=user_id,
-                    text="⏰ Вы не изучали слова последние 3 дня! Пора повторить /word")
-            except:
-                continue
-
 # --- Настройка приложения ---
 app = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
 
@@ -79,10 +68,6 @@ app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(CommandHandler('progress', progress))
-
-# --- JobQueue для напоминаний ---
-job_queue = app.job_queue
-job_queue.run_repeating(remind_users, interval=24*3600, first=10)  # проверка каждый день
 
 # --- Запуск ---
 app.run_polling()
