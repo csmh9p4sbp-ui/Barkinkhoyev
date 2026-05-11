@@ -15,7 +15,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 
 WORDS_FILE = "words.csv"
 USERS_DIR = "users"
-TEMPLATE_FILE = "card_template.png"
+TEMPLATE_FILE = "card_template.PNG"
 
 os.makedirs(USERS_DIR, exist_ok=True)
 
@@ -78,7 +78,7 @@ def fit_text(draw, text, max_width, start_size, min_size=40):
 
 def create_word_card(arabic_word, russian_word):
     if not os.path.exists(TEMPLATE_FILE):
-        raise FileNotFoundError("Не найден файл card_template.png")
+        raise FileNotFoundError("Не найден файл card_template.PNG")
 
     img = Image.open(TEMPLATE_FILE).convert("RGB")
     draw = ImageDraw.Draw(img)
