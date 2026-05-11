@@ -23,53 +23,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # --- Отправка нового слова ---
-async def send_new_word(chat_id):
+async def send_new_word(chat_id, bot):
     today = datetime.now()
-    # Слова для повторения
     due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
-    # Новые слова
     new_words = df[~df['learned']]
     candidates = pd.concat([due_words, new_words])
 
     if candidates.empty:
-        await app.bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
+        await bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
         return
 
     word = candidates.sample(1).iloc[0]
 
     # Кнопки
-    keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
+    buttons = [[InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{word.name}")]]
     if word['learned']:
-        keyboard.append([InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')])
+        buttons.append([InlineKeyboardButton("💡 Помню", callback_data=f"remember_{word.name}")])
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await app.bot.send_message(chat_id=chat_id, text=f"{word['слово']} — {word['كلمة']}", reply_markup=reply_markup)
+    markup = InlineKeyboardMarkup(buttons)
+    await bot.send_message(chat_id=chat_id, text=f"{word['слово']} — {word['كلمة']}", reply_markup=markup)
 
 # --- Команда /word ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
-    await send_new_word(chat_id)
+    await send_new_word(chat_id, context.bot)
 
-# --- Обработка нажатий кнопок ---
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Обработка inline-кнопок ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    idx = int(data.split('_')[1])
+    idx = int(data.split("_")[1])
     word_row = df.loc[idx]
     today = datetime.now()
 
-    if data.startswith('learned'):
+    if data.startswith("learned"):
         df.at[idx, 'learned'] = True
         df.at[idx, 'last_review'] = today
         df.at[idx, 'interval'] = 1
-    elif data.startswith('remember'):
+    elif data.startswith("remember"):
+        current_interval = df.at[idx, 'interval']
         df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = min(word_row.get('interval', 1) * 2, 30)
+        df.at[idx, 'interval'] = min(current_interval * 2, 30)
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
-    # Удаляем старое сообщение (бот удаляет только свои сообщения)
+    # Удаляем старое сообщение
     try:
         await query.message.delete()
     except:
@@ -77,9 +76,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Отправляем новое слово
     chat_id = query.message.chat_id
-    await send_new_word(chat_id)
+    await send_new_word(chat_id, context.bot)
 
-# --- Прогресс ---
+# --- Текстовый прогресс ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned_count = df['learned'].sum()
     total_count = len(df)
@@ -109,7 +108,7 @@ app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
-app.add_handler(CallbackQueryHandler(button_callback))
+app.add_handler(CallbackQueryHandler(button_handler))
 
 # --- Запуск ---
 app.run_polling()
