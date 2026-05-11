@@ -4,7 +4,6 @@ import random
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-import matplotlib.pyplot as plt
 
 # --- Загрузка словаря ---
 if not os.path.exists('words.csv'):
@@ -48,18 +47,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned_count = df['learned'].sum()
-    remaining_count = len(df) - learned_count
-
-    colors = ['#D35400', '#F1C40F']  # Кавказская палитра
-    labels = ['Выучено', 'Осталось']
-
-    plt.figure(figsize=(6,6))
-    plt.pie([learned_count, remaining_count], labels=labels, autopct='%1.1f%%', startangle=90,
-            colors=colors, wedgeprops={'edgecolor':'#6E2C00', 'linewidth':2})
-    plt.title('Прогресс изучения слов', fontsize=16, fontweight='bold', color='#6E2C00')
-    plt.savefig('progress.png', dpi=150, transparent=True)
-    plt.close()
-    await update.message.reply_photo(open('progress.png','rb'))
+    total_count = len(df)
+    remaining_count = total_count - learned_count
+    percent = int((learned_count / total_count) * 100) if total_count > 0 else 0
+    message = (f"Вы выучили {learned_count} слов из {total_count}.\n"
+               f"Осталось выучить ещё {remaining_count} слов.\n"
+               f"Прогресс: {percent}% освоено ✅")
+    await update.message.reply_text(message)
 
 # --- Настройка приложения ---
 app = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
