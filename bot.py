@@ -16,17 +16,13 @@ else:
     if 'interval' not in df.columns:
         df['interval'] = 1
 
-# --- Дата последнего изучения для пользователя ---
-user_last_seen = {}
-
 # --- Приветствие ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_last_seen[update.effective_user.id] = datetime.now()
     await update.message.reply_text(
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-# --- Функция отправки нового слова ---
+# --- Отправка нового слова ---
 async def send_new_word(chat_id):
     today = datetime.now()
     due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
@@ -38,16 +34,18 @@ async def send_new_word(chat_id):
         return
 
     word = candidates.sample(1).iloc[0]
+
+    # Кнопки
     keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
     if word['learned']:
         keyboard.append([InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await app.bot.send_message(chat_id=chat_id, text=f"{word['слово']} — {word['كلمة']}", reply_markup=reply_markup)
 
 # --- Команда /word ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
-    user_last_seen[update.effective_user.id] = datetime.now()
     await send_new_word(chat_id)
 
 # --- Обработка кнопок ---
@@ -79,16 +77,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     await send_new_word(chat_id)
 
-# --- Текстовый прогресс ---
+# --- Прогресс ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned_count = df['learned'].sum()
     total_count = len(df)
     remaining_count = total_count - learned_count
     percent = int((learned_count / total_count) * 100) if total_count > 0 else 0
-    message = (f"Вы выучили {learned_count} слов из {total_count}.\n"
-               f"Осталось выучить ещё {remaining_count} слов.\n"
-               f"Прогресс: {percent}% освоено ✅")
-    await update.message.reply_text(message)
+    await update.message.reply_text(
+        f"Вы выучили {learned_count} слов из {total_count}.\n"
+        f"Осталось выучить ещё {remaining_count} слов.\n"
+        f"Прогресс: {percent}% освоено ✅"
+    )
 
 # --- Список выученных слов ---
 async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
