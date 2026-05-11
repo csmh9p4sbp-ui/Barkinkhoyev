@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -22,19 +22,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-# --- Новый Word ---
+# --- Функция отправки нового слова ---
 async def send_new_word(chat_id, bot):
     today = datetime.now()
-    due = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
-    new = df[~df['learned']]
-    pool = pd.concat([due, new])
+    due = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='D') <= today)]
+    new_words = df[~df['learned']]
+    candidates = pd.concat([due, new_words])
 
-    if pool.empty:
+    if candidates.empty:
         await bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
         return
 
-    word = pool.sample(1).iloc[0]
-
+    word = candidates.sample(1).iloc[0]
     buttons = [[InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{word.name}")]]
     if word['learned']:
         buttons.append([InlineKeyboardButton("💡 Помню", callback_data=f"remember_{word.name}")])
@@ -46,7 +45,7 @@ async def send_new_word(chat_id, bot):
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_new_word(update.effective_chat.id, context.bot)
 
-# --- Обработка кнопок ---
+# --- Callback для кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -54,37 +53,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = int(data.split("_")[1])
     today = datetime.now()
 
-    # учим или запоминаем
     if data.startswith("learned"):
         df.at[idx, 'learned'] = True
         df.at[idx, 'last_review'] = today
         df.at[idx, 'interval'] = 1
     elif data.startswith("remember"):
-        old_int = df.at[idx, 'interval']
+        old_interval = df.at[idx, 'interval']
         df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = min(old_int * 2, 30)
+        df.at[idx, 'interval'] = min(old_interval * 2, 30)
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
-    # удаляем сообщение
     try:
         await query.message.delete()
     except:
         pass
 
-    # отправляем новое
-    await send_new_word(update.effective_chat.id, context.bot)
+    await send_new_word(query.message.chat_id, context.bot)
 
 # --- /progress ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned = df['learned'].sum()
     total = len(df)
-    remain = total - learned
-    pct = int((learned/total)*100) if total > 0 else 0
-
+    remaining = total - learned
+    pct = int((learned / total) * 100) if total > 0 else 0
     await update.message.reply_text(
         f"Вы выучили {learned} слов из {total}.\n"
-        f"Осталось выучить ещё {remain}.\n"
+        f"Осталось выучить ещё {remaining}.\n"
         f"Прогресс: {pct}% освоено ✅"
     )
 
@@ -99,13 +94,13 @@ async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{r['слово']} — {r['كلمة']}\n"
     await update.message.reply_text(text)
 
-# --- Запуск ---
+# --- Настройка бота ---
 app = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
-
 app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
 app.add_handler(CallbackQueryHandler(button_handler))
 
+# --- Запуск ---
 app.run_polling()
