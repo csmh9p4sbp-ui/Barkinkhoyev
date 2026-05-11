@@ -1,13 +1,12 @@
 import os
 import pandas as pd
 from datetime import datetime
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+
 
 # --- Загрузка словаря ---
 if not os.path.exists('words.csv'):
@@ -15,18 +14,88 @@ if not os.path.exists('words.csv'):
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 else:
     df = pd.read_csv('words.csv', encoding='utf-8-sig')
-
     df['learned'] = df['learned'].astype(bool)
     df['last_review'] = pd.to_datetime(df['last_review'], errors='coerce')
 
     if 'interval' not in df.columns:
         df['interval'] = 1
 
+
 # --- Проверка BOT_TOKEN ---
 token = os.environ.get('BOT_TOKEN')
 
 if not token:
     raise ValueError("Ошибка: переменная BOT_TOKEN не установлена!")
+
+
+# --- Генерация картинки слова ---
+def create_word_card(arabic_word, russian_word):
+    width, height = 1280, 720
+
+    img = Image.new("RGB", (width, height), "#f6ead7")
+    draw = ImageDraw.Draw(img)
+
+    # Основная карточка
+    draw.rounded_rectangle(
+        (70, 50, width - 70, height - 50),
+        radius=55,
+        outline="#c89b3c",
+        width=8,
+        fill="#fbf4e8"
+    )
+
+    # Внутренняя тонкая рамка
+    draw.rounded_rectangle(
+        (95, 75, width - 95, height - 75),
+        radius=45,
+        outline="#e6c98c",
+        width=3
+    )
+
+    # Декоративные линии
+    draw.line((410, 460, 595, 460), fill="#c89b3c", width=3)
+    draw.line((685, 460, 870, 460), fill="#c89b3c", width=3)
+    draw.polygon(
+        [(640, 445), (655, 460), (640, 475), (625, 460)],
+        fill="#c89b3c"
+    )
+
+    # Шрифты
+    arabic_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    russian_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+
+    arabic_font = ImageFont.truetype(arabic_font_path, 125)
+    russian_font = ImageFont.truetype(russian_font_path, 68)
+
+    # Арабское слово
+    arabic_bbox = draw.textbbox((0, 0), arabic_word, font=arabic_font)
+    arabic_width = arabic_bbox[2] - arabic_bbox[0]
+
+    draw.text(
+        ((width - arabic_width) / 2, 205),
+        arabic_word,
+        font=arabic_font,
+        fill="#064d36"
+    )
+
+    # Перевод
+    russian_bbox = draw.textbbox((0, 0), russian_word, font=russian_font)
+    russian_width = russian_bbox[2] - russian_bbox[0]
+
+    draw.text(
+        ((width - russian_width) / 2, 500),
+        russian_word,
+        font=russian_font,
+        fill="#064d36"
+    )
+
+    bio = BytesIO()
+    bio.name = "word_card.png"
+    img.save(bio, "PNG")
+    bio.seek(0)
+
+    return bio
+
 
 # --- Главное меню ---
 def main_menu():
@@ -38,6 +107,7 @@ def main_menu():
     ]
 
     return InlineKeyboardMarkup(buttons)
+
 
 # --- Команда /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,6 +122,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu()
     )
 
+
 # --- Отправка нового слова ---
 async def send_new_word(chat_id, bot):
     today = datetime.now().replace(microsecond=0)
@@ -62,7 +133,6 @@ async def send_new_word(chat_id, bot):
     ]
 
     new_words = df[~df['learned']]
-
     pool = pd.concat([due, new_words])
 
     if pool.empty:
@@ -85,20 +155,19 @@ async def send_new_word(chat_id, bot):
 
     markup = InlineKeyboardMarkup(buttons)
 
-    await bot.send_message(
+    card = create_word_card(word['كلمة'], word['слово'])
+
+    await bot.send_photo(
         chat_id=chat_id,
-        text=(
-            "╔════════════╗\n\n"
-            f"      {word['كلمة']}\n\n"
-            f"       {word['слово']}\n\n"
-            "╚════════════╝"
-        ),
+        photo=card,
         reply_markup=markup
     )
+
 
 # --- Команда /word ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_new_word(update.effective_chat.id, context.bot)
+
 
 # --- Обработка кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,7 +190,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("remember"):
             old_interval = df.at[idx, 'interval']
-
             df.at[idx, 'last_review'] = today
             df.at[idx, 'interval'] = min(old_interval * 2, 30)
 
@@ -189,15 +257,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="🔄 Все слова сброшены. Можно начать заново!"
         )
 
+
 # --- Настройка приложения ---
 app = ApplicationBuilder().token(token).build()
 
 app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
+app.add_handler(CallbackQueryHandler(button_handler))
 
-app.add_handler(
-    CallbackQueryHandler(button_handler)
-)
 
 # --- Запуск ---
 app.run_polling()
