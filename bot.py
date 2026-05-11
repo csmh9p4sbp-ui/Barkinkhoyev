@@ -25,7 +25,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Отправка нового слова ---
 async def send_new_word(chat_id):
     today = datetime.now()
+    # Слова для повторения
     due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
+    # Новые слова
     new_words = df[~df['learned']]
     candidates = pd.concat([due_words, new_words])
 
@@ -48,8 +50,8 @@ async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     await send_new_word(chat_id)
 
-# --- Обработка кнопок ---
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Обработка нажатий кнопок ---
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -63,11 +65,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df.at[idx, 'interval'] = 1
     elif data.startswith('remember'):
         df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = min(word_row.get('interval',1) * 2, 30)
+        df.at[idx, 'interval'] = min(word_row.get('interval', 1) * 2, 30)
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
-    # Удаляем старое сообщение
+    # Удаляем старое сообщение (бот удаляет только свои сообщения)
     try:
         await query.message.delete()
     except:
@@ -107,7 +109,7 @@ app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
 app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
-app.add_handler(CallbackQueryHandler(button))
+app.add_handler(CallbackQueryHandler(button_callback))
 
 # --- Запуск ---
 app.run_polling()
