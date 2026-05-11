@@ -40,8 +40,7 @@ async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
-    idx = int(data.split('_')[1])
+    idx = int(query.data.split('_')[1])
     df.at[idx, 'learned'] = True
     df.at[idx, 'last_review'] = datetime.now()
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
