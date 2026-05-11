@@ -14,47 +14,52 @@ else:
     df['learned'] = df['learned'].astype(bool)
     df['last_review'] = pd.to_datetime(df['last_review'], errors='coerce')
     if 'interval' not in df.columns:
-        df['interval'] = 1  # по умолчанию интервал 1 день
+        df['interval'] = 1
 
-# --- Дата последнего изучения для каждого пользователя ---
+# --- Дата последнего изучения для пользователя ---
 user_last_seen = {}
 
 # --- Команды ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_last_seen[update.effective_user.id] = datetime.now()
-    await update.message.reply_text("Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖")
+    await update.message.reply_text(
+        "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
+    )
 
-# --- Выдача слова с учетом интервального повторения ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_last_seen[user_id] = datetime.now()
-
     today = datetime.now()
-    due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
-    new_words = df[~df['learned']]
-    candidates = pd.concat([due_words, new_words])
 
-    if candidates.empty:
+    # Сначала ищем слова, которые нужно повторить (уже выученные)
+    due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
+    # Новые слова
+    new_words = df[~df['learned']]
+
+    # Если есть слова для повторения, показываем их
+    if not due_words.empty:
+        word = due_words.sample(1).iloc[0]
+        keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')],
+                    [InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')]]
+    elif not new_words.empty:
+        word = new_words.sample(1).iloc[0]
+        keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
+    else:
         await update.message.reply_text("Все слова выучены! 🎉")
         return
 
-    word = candidates.sample(1).iloc[0]
-    keyboard = [
-        [InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')],
-        [InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')]
-    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"{word['слово']} — {word['كلمة']}", reply_markup=reply_markup)
 
-# --- Обработка кнопок ---
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     idx = int(data.split('_')[1])
     word_row = df.loc[idx]
-
     today = datetime.now()
+
+    # Обработка кнопок
     if data.startswith('learned'):
         df.at[idx, 'learned'] = True
         df.at[idx, 'last_review'] = today
@@ -65,8 +70,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
-    # Удаляем старое сообщение и отправляем новое слово
-    await query.message.delete()
+    # Удаляем старое сообщение
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+    # Отправляем новое слово сразу
     await daily_word(update, context)
 
 # --- Текстовый прогресс ---
