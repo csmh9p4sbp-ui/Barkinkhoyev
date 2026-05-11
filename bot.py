@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-import random
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -66,9 +65,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    chat_id = query.message.chat_id
     today = datetime.now().replace(microsecond=0)
 
-    # Кнопки изучения слова
+    # Кнопки изучения слов
     if data.startswith("learned_") or data.startswith("remember_"):
         idx = int(data.split("_")[1])
         if data.startswith("learned"):
@@ -84,59 +84,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         except:
             pass
-        await send_new_word(query.message.chat_id, context.bot)
+        await send_new_word(chat_id, context.bot)
 
     # Кнопки команд
     elif data == "cmd_word":
-        await send_new_word(query.message.chat_id, context.bot)
+        await send_new_word(chat_id, context.bot)
     elif data == "cmd_progress":
-        await progress(update, context)
+        learned = df['learned'].sum()
+        total = len(df)
+        remaining = total - learned
+        percent = int((learned / total) * 100) if total > 0 else 0
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Вы выучили {learned} слов из {total}.\n"
+                 f"Осталось выучить ещё {remaining}.\n"
+                 f"Прогресс: {percent}% освоено ✅"
+        )
     elif data == "cmd_learned":
-        await learned_list(update, context)
+        learned = df[df['learned']]
+        if learned.empty:
+            await context.bot.send_message(chat_id=chat_id, text="Вы пока не выучили ни одного слова.")
+        else:
+            text = "Список выученных слов:\n"
+            for _, r in learned.iterrows():
+                text += f"{r['слово']} — {r['كلمة']}\n"
+            await context.bot.send_message(chat_id=chat_id, text=text)
     elif data == "cmd_reset":
-        await reset(update, context)
-
-# --- /progress ---
-async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    learned = df['learned'].sum()
-    total = len(df)
-    remaining = total - learned
-    percent = int((learned / total) * 100) if total > 0 else 0
-    await update.message.reply_text(
-        f"Вы выучили {learned} слов из {total}.\n"
-        f"Осталось выучить ещё {remaining}.\n"
-        f"Прогресс: {percent}% освоено ✅"
-    )
-
-# --- /learned ---
-async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    learned = df[df['learned']]
-    if learned.empty:
-        await update.message.reply_text("Вы пока не выучили ни одного слова.")
-        return
-    text = "Список выученных слов:\n"
-    for _, r in learned.iterrows():
-        text += f"{r['слово']} — {r['كلمة']}\n"
-    await update.message.reply_text(text)
-
-# --- /reset ---
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global df
-    df['learned'] = False
-    df['last_review'] = pd.NaT
-    df['interval'] = 1
-    df.to_csv('words.csv', index=False, encoding='utf-8-sig')
-    await update.message.reply_text(
-        "Все слова обнулены! Теперь вы можете учить их заново. 📖"
-    )
+        df['learned'] = False
+        df['last_review'] = pd.NaT
+        df['interval'] = 1
+        df.to_csv('words.csv', index=False, encoding='utf-8-sig')
+        await context.bot.send_message(chat_id=chat_id,
+                                       text="Все слова обнулены! Теперь вы можете учить их заново. 📖")
 
 # --- Настройка приложения ---
 app = ApplicationBuilder().token(token).build()
 app.add_handler(CommandHandler('start', start))
 app.add_handler(CommandHandler('word', daily_word))
-app.add_handler(CommandHandler('progress', progress))
-app.add_handler(CommandHandler('learned', learned_list))
-app.add_handler(CommandHandler('reset', reset))
+app.add_handler(CommandHandler('progress', lambda u,c: None))  # оставляем обработку через кнопки
+app.add_handler(CommandHandler('learned', lambda u,c: None))
+app.add_handler(CommandHandler('reset', lambda u,c: None))
 app.add_handler(CallbackQueryHandler(button_handler))
 
 # --- Запуск ---
