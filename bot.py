@@ -1,4 +1,5 @@
 import os
+import shutil
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
@@ -9,20 +10,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 
 
 WORDS_FILE = "words.csv"
+USERS_DIR = "users"
 
-# --- Загрузка словаря ---
-if not os.path.exists(WORDS_FILE):
-    df = pd.DataFrame(columns=["كلمة", "слово", "learned", "last_review", "interval"])
-    df.to_csv(WORDS_FILE, index=False, encoding="utf-8-sig")
-else:
-    df = pd.read_csv(WORDS_FILE, encoding="utf-8-sig")
-    df["learned"] = df["learned"].astype(str).str.lower().isin(["true", "1", "yes"])
-    df["last_review"] = pd.to_datetime(df["last_review"], errors="coerce")
-
-    if "interval" not in df.columns:
-        df["interval"] = 1
-
-    df["interval"] = pd.to_numeric(df["interval"], errors="coerce").fillna(1).astype(int)
+os.makedirs(USERS_DIR, exist_ok=True)
 
 
 # --- Проверка BOT_TOKEN ---
@@ -32,7 +22,47 @@ if not token:
     raise ValueError("Ошибка: переменная BOT_TOKEN не установлена!")
 
 
-# --- Загрузка шрифта без падения ---
+# --- Файл пользователя ---
+def get_user_words_file(user_id):
+    return os.path.join(USERS_DIR, f"{user_id}_words.csv")
+
+
+# --- Получить словарь конкретного пользователя ---
+def load_user_words(user_id):
+    user_file = get_user_words_file(user_id)
+
+    if not os.path.exists(WORDS_FILE):
+        df = pd.DataFrame(columns=["كلمة", "слово", "learned", "last_review", "interval"])
+        df.to_csv(WORDS_FILE, index=False, encoding="utf-8-sig")
+
+    if not os.path.exists(user_file):
+        shutil.copy(WORDS_FILE, user_file)
+
+    df = pd.read_csv(user_file, encoding="utf-8-sig")
+
+    if "learned" not in df.columns:
+        df["learned"] = False
+
+    if "last_review" not in df.columns:
+        df["last_review"] = pd.NaT
+
+    if "interval" not in df.columns:
+        df["interval"] = 1
+
+    df["learned"] = df["learned"].astype(str).str.lower().isin(["true", "1", "yes"])
+    df["last_review"] = pd.to_datetime(df["last_review"], errors="coerce")
+    df["interval"] = pd.to_numeric(df["interval"], errors="coerce").fillna(1).astype(int)
+
+    return df
+
+
+# --- Сохранить словарь пользователя ---
+def save_user_words(user_id, df):
+    user_file = get_user_words_file(user_id)
+    df.to_csv(user_file, index=False, encoding="utf-8-sig")
+
+
+# --- Загрузка шрифта ---
 def load_font(size):
     font_paths = [
         "fonts/DejaVuSans.ttf",
@@ -130,6 +160,9 @@ def main_menu():
 
 # --- /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    load_user_words(user_id)
+
     greeting = (
         "Ассаляму алейкум! 📖\n\n"
         "Добро пожаловать в бот для изучения слов Священного Корана.\n\n"
@@ -140,7 +173,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- Отправка нового слова ---
-async def send_new_word(chat_id, bot):
+async def send_new_word(user_id, chat_id, bot):
+    df = load_user_words(user_id)
+
     today = datetime.now().replace(microsecond=0)
 
     due = df[
@@ -156,14 +191,15 @@ async def send_new_word(chat_id, bot):
         return
 
     word = pool.sample(1).iloc[0]
+    idx = word.name
 
     buttons = [
-        [InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{word.name}")]
+        [InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{idx}")]
     ]
 
     if word["learned"]:
         buttons.append(
-            [InlineKeyboardButton("💡 Помню", callback_data=f"remember_{word.name}")]
+            [InlineKeyboardButton("💡 Помню", callback_data=f"remember_{idx}")]
         )
 
     markup = InlineKeyboardMarkup(buttons)
@@ -179,7 +215,10 @@ async def send_new_word(chat_id, bot):
 
 # --- /word ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_new_word(update.effective_chat.id, context.bot)
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    await send_new_word(user_id, chat_id, context.bot)
 
 
 # --- Кнопки ---
@@ -187,12 +226,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
+    user_id = query.from_user.id
     chat_id = query.message.chat_id
+    data = query.data
     today = datetime.now().replace(microsecond=0)
+
+    df = load_user_words(user_id)
 
     if data.startswith("learned_") or data.startswith("remember_"):
         idx = int(data.split("_")[1])
+
+        if idx not in df.index:
+            await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
+            return
 
         if data.startswith("learned_"):
             df.at[idx, "learned"] = True
@@ -204,17 +250,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             df.at[idx, "last_review"] = today
             df.at[idx, "interval"] = min(old_interval * 2, 30)
 
-        df.to_csv(WORDS_FILE, index=False, encoding="utf-8-sig")
+        save_user_words(user_id, df)
 
         try:
             await query.message.delete()
         except Exception:
             pass
 
-        await send_new_word(chat_id, context.bot)
+        await send_new_word(user_id, chat_id, context.bot)
 
     elif data == "cmd_word":
-        await send_new_word(chat_id, context.bot)
+        await send_new_word(user_id, chat_id, context.bot)
 
     elif data == "cmd_progress":
         learned = int(df["learned"].sum())
@@ -225,9 +271,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                f"📊 Вы выучили {learned} слов из {total}\n\n"
+                f"📊 Ваш прогресс:\n\n"
+                f"✅ Выучено: {learned} из {total}\n"
                 f"📖 Осталось: {remaining}\n"
-                f"✅ Прогресс: {percent}%"
+                f"📈 Прогресс: {percent}%"
             )
         )
 
@@ -240,27 +287,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="Вы пока не выучили ни одного слова."
             )
         else:
-            text = "✅ Выученные слова:\n\n"
+            text = "✅ Ваши выученные слова:\n\n"
 
             for _, r in learned_words.iterrows():
                 text += f"{r['слово']} — {r['كلمة']}\n"
 
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=text[:4000]
-            )
+            for i in range(0, len(text), 3500):
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text[i:i + 3500]
+                )
 
     elif data == "cmd_reset":
         df["learned"] = False
         df["last_review"] = pd.NaT
         df["interval"] = 1
 
-        df.to_csv(WORDS_FILE, index=False, encoding="utf-8-sig")
+        save_user_words(user_id, df)
 
         await context.bot.send_message(
             chat_id=chat_id,
-            text="🔄 Все слова сброшены. Можно начать заново!"
+            text="🔄 Ваш прогресс сброшен. Можно начать заново!"
         )
+
+
+# --- Обработчик ошибок ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f"Ошибка: {context.error}")
 
 
 # --- Запуск ---
@@ -269,5 +322,6 @@ app = ApplicationBuilder().token(token).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("word", daily_word))
 app.add_handler(CallbackQueryHandler(button_handler))
+app.add_error_handler(error_handler)
 
 app.run_polling()
