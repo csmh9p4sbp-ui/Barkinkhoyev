@@ -19,19 +19,17 @@ else:
 # --- Дата последнего изучения для пользователя ---
 user_last_seen = {}
 
-# --- Команды ---
+# --- Приветствие ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_last_seen[update.effective_user.id] = datetime.now()
     await update.message.reply_text(
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-# --- Отправка нового слова в чат ---
+# --- Функция отправки нового слова ---
 async def send_new_word(chat_id):
     today = datetime.now()
-    # Слова, которые нужно повторить
     due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
-    # Новые слова
     new_words = df[~df['learned']]
     candidates = pd.concat([due_words, new_words])
 
@@ -41,7 +39,6 @@ async def send_new_word(chat_id):
 
     word = candidates.sample(1).iloc[0]
     keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
-    # Кнопка "Помню" только для уже выученных слов
     if word['learned']:
         keyboard.append([InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
