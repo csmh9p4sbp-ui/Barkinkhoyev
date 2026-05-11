@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -22,20 +22,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-# --- Отправка нового слова ---
+# --- Новый Word ---
 async def send_new_word(chat_id, bot):
     today = datetime.now()
-    due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
-    new_words = df[~df['learned']]
-    candidates = pd.concat([due_words, new_words])
+    due = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
+    new = df[~df['learned']]
+    pool = pd.concat([due, new])
 
-    if candidates.empty:
+    if pool.empty:
         await bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
         return
 
-    word = candidates.sample(1).iloc[0]
+    word = pool.sample(1).iloc[0]
 
-    # Кнопки
     buttons = [[InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{word.name}")]]
     if word['learned']:
         buttons.append([InlineKeyboardButton("💡 Помню", callback_data=f"remember_{word.name}")])
@@ -43,65 +42,64 @@ async def send_new_word(chat_id, bot):
     markup = InlineKeyboardMarkup(buttons)
     await bot.send_message(chat_id=chat_id, text=f"{word['слово']} — {word['كلمة']}", reply_markup=markup)
 
-# --- Команда /word ---
+# --- /word ---
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    await send_new_word(chat_id, context.bot)
+    await send_new_word(update.effective_chat.id, context.bot)
 
-# --- Обработка inline-кнопок ---
+# --- Обработка кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     idx = int(data.split("_")[1])
-    word_row = df.loc[idx]
     today = datetime.now()
 
+    # учим или запоминаем
     if data.startswith("learned"):
         df.at[idx, 'learned'] = True
         df.at[idx, 'last_review'] = today
         df.at[idx, 'interval'] = 1
     elif data.startswith("remember"):
-        current_interval = df.at[idx, 'interval']
+        old_int = df.at[idx, 'interval']
         df.at[idx, 'last_review'] = today
-        df.at[idx, 'interval'] = min(current_interval * 2, 30)
+        df.at[idx, 'interval'] = min(old_int * 2, 30)
 
     df.to_csv('words.csv', index=False, encoding='utf-8-sig')
 
-    # Удаляем старое сообщение
+    # удаляем сообщение
     try:
         await query.message.delete()
     except:
         pass
 
-    # Отправляем новое слово
-    chat_id = query.message.chat_id
-    await send_new_word(chat_id, context.bot)
+    # отправляем новое
+    await send_new_word(update.effective_chat.id, context.bot)
 
-# --- Текстовый прогресс ---
+# --- /progress ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    learned_count = df['learned'].sum()
-    total_count = len(df)
-    remaining_count = total_count - learned_count
-    percent = int((learned_count / total_count) * 100) if total_count > 0 else 0
+    learned = df['learned'].sum()
+    total = len(df)
+    remain = total - learned
+    pct = int((learned/total)*100) if total > 0 else 0
+
     await update.message.reply_text(
-        f"Вы выучили {learned_count} слов из {total_count}.\n"
-        f"Осталось выучить ещё {remaining_count} слов.\n"
-        f"Прогресс: {percent}% освоено ✅"
+        f"Вы выучили {learned} слов из {total}.\n"
+        f"Осталось выучить ещё {remain}.\n"
+        f"Прогресс: {pct}% освоено ✅"
     )
 
-# --- Список выученных слов ---
+# --- /learned ---
 async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned = df[df['learned']]
     if learned.empty:
         await update.message.reply_text("Вы пока не выучили ни одного слова.")
         return
-    message = "Список выученных слов:\n"
-    for _, row in learned.iterrows():
-        message += f"{row['слово']} — {row['كلمة']}\n"
-    await update.message.reply_text(message)
+    text = "Список выученных слов:\n"
+    for _, r in learned.iterrows():
+        text += f"{r['слово']} — {r['كلمة']}\n"
+    await update.message.reply_text(text)
 
-# --- Настройка приложения ---
+# --- Запуск ---
 app = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
 
 app.add_handler(CommandHandler('start', start))
@@ -110,5 +108,4 @@ app.add_handler(CommandHandler('progress', progress))
 app.add_handler(CommandHandler('learned', learned_list))
 app.add_handler(CallbackQueryHandler(button_handler))
 
-# --- Запуск ---
 app.run_polling()
