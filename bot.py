@@ -26,31 +26,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ассаляму алейкум! Добро пожаловать в бот для изучения слов Священного Корана! 📖"
     )
 
-async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_last_seen[user_id] = datetime.now()
+# --- Отправка нового слова в чат ---
+async def send_new_word(chat_id):
     today = datetime.now()
-
-    # Сначала ищем слова, которые нужно повторить (уже выученные)
+    # Слова, которые нужно повторить
     due_words = df[(df['learned']) & (df['last_review'] + pd.to_timedelta(df['interval'], unit='d') <= today)]
     # Новые слова
     new_words = df[~df['learned']]
+    candidates = pd.concat([due_words, new_words])
 
-    # Если есть слова для повторения, показываем их
-    if not due_words.empty:
-        word = due_words.sample(1).iloc[0]
-        keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')],
-                    [InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')]]
-    elif not new_words.empty:
-        word = new_words.sample(1).iloc[0]
-        keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
-    else:
-        await update.message.reply_text("Все слова выучены! 🎉")
+    if candidates.empty:
+        await app.bot.send_message(chat_id=chat_id, text="Все слова выучены! 🎉")
         return
 
+    word = candidates.sample(1).iloc[0]
+    keyboard = [[InlineKeyboardButton("✅ Выучено", callback_data=f'learned_{word.name}')]]
+    # Кнопка "Помню" только для уже выученных слов
+    if word['learned']:
+        keyboard.append([InlineKeyboardButton("💡 Помню", callback_data=f'remember_{word.name}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"{word['слово']} — {word['كلمة']}", reply_markup=reply_markup)
+    await app.bot.send_message(chat_id=chat_id, text=f"{word['слово']} — {word['كلمة']}", reply_markup=reply_markup)
 
+# --- Команда /word ---
+async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    user_last_seen[update.effective_user.id] = datetime.now()
+    await send_new_word(chat_id)
+
+# --- Обработка кнопок ---
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -59,7 +62,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     word_row = df.loc[idx]
     today = datetime.now()
 
-    # Обработка кнопок
     if data.startswith('learned'):
         df.at[idx, 'learned'] = True
         df.at[idx, 'last_review'] = today
@@ -76,8 +78,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-    # Отправляем новое слово сразу
-    await daily_word(update, context)
+    # Отправляем новое слово
+    chat_id = query.message.chat_id
+    await send_new_word(chat_id)
 
 # --- Текстовый прогресс ---
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +93,7 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
                f"Прогресс: {percent}% освоено ✅")
     await update.message.reply_text(message)
 
-# --- Вывод выученных слов ---
+# --- Список выученных слов ---
 async def learned_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     learned = df[df['learned']]
     if learned.empty:
