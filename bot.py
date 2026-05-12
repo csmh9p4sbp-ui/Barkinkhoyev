@@ -660,15 +660,12 @@ async def error_handler(update, context):
     print(f"Ошибка: {context.error}")
 
 
-app = ApplicationBuilder().token(token).build()
+app = ApplicationBuilder().token(token).job_queue(None).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("word", daily_word))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_text_handler))
 app.add_error_handler(error_handler)
-
-if app.job_queue:
-    app.job_queue.run_daily(reminder_job, time=time(hour=9, minute=0))
 
 app.run_polling()
