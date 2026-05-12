@@ -1,5 +1,7 @@
-bot.py
-words.csv
-requirements.txt
-card_template.PNG
-NotoNaskhArabic-Regular.ttf
+python-telegram-bot==20.3
+pandas
+matplotlib
+Pillow
+arabic-reshaper
+python-bidi
+groq
