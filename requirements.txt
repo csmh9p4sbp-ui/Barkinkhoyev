@@ -4,4 +4,4 @@ matplotlib
 Pillow
 arabic-reshaper
 python-bidi
-google-genai
+groq
