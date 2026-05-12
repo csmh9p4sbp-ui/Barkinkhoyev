@@ -9,7 +9,6 @@ from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 from bidi.algorithm import get_display
 from matplotlib import font_manager
-
 from google import genai
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,9 +21,10 @@ from telegram.ext import (
     filters,
 )
 
+
 WORDS_FILE = "words.csv"
 USERS_DIR = "users"
-TEMPLATE_FILE = "card_template.png"
+TEMPLATE_FILE = "card_template.PNG"
 
 os.makedirs(USERS_DIR, exist_ok=True)
 
@@ -34,7 +34,7 @@ if not token:
 
 gemini_key = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = "gemini-2.0-flash"
 
 
 def get_user_words_file(user_id):
@@ -79,26 +79,29 @@ def fit_text(draw, text, max_width, start_size, min_size=40):
     while size >= min_size:
         font = ImageFont.truetype(font_path, size)
         bbox = draw.textbbox((0, 0), text, font=font)
+
         if bbox[2] - bbox[0] <= max_width:
             return font
+
         size -= 5
 
     return ImageFont.truetype(font_path, min_size)
 
 
 def create_word_card(arabic_word, russian_word):
-    if not os.path.exists(TEMPLATE_FILE):
-        raise FileNotFoundError("Не найден файл card_template.png")
+    if os.path.exists(TEMPLATE_FILE):
+        img = Image.open(TEMPLATE_FILE).convert("RGB")
+    else:
+        img = Image.new("RGB", (1280, 720), "#f6ead7")
 
-    img = Image.open(TEMPLATE_FILE).convert("RGB")
     draw = ImageDraw.Draw(img)
     width, height = img.size
 
     arabic_word = get_display(arabic_reshaper.reshape(str(arabic_word)))
     russian_word = str(russian_word)
 
-    arabic_font = fit_text(draw, arabic_word, max_width=850, start_size=175, min_size=90)
-    russian_font = fit_text(draw, russian_word, max_width=700, start_size=78, min_size=45)
+    arabic_font = fit_text(draw, arabic_word, max_width=int(width * 0.70), start_size=175, min_size=90)
+    russian_font = fit_text(draw, russian_word, max_width=int(width * 0.65), start_size=78, min_size=45)
 
     arabic_y = int(height * 0.39)
     russian_y = int(height * 0.76)
@@ -129,6 +132,7 @@ def create_word_card(arabic_word, russian_word):
     bio.name = "word_card.png"
     img.save(bio, "PNG")
     bio.seek(0)
+
     return bio
 
 
@@ -142,9 +146,33 @@ def main_menu():
     ])
 
 
+def build_teacher_prompt(user_question, last_word=None):
+    word_context = ""
+
+    if last_word:
+        word_context = (
+            f"\nТекущее слово пользователя:\n"
+            f"Арабский: {last_word.get('arabic')}\n"
+            f"Перевод: {last_word.get('russian')}\n"
+        )
+
+    return (
+        "Ты помощник по изучению коранического арабского языка. "
+        "Отвечай на русском языке. Объясняй просто, кратко и понятно. "
+        "Ты не муфтий и не даёшь фетвы. Не делай богословских постановлений. "
+        "Фокусируйся только на языке: значение слова, корень, форма, перевод, запоминание. "
+        "Если вопрос религиозно-правовой, мягко скажи обратиться к знающему человеку.\n"
+        f"{word_context}\n"
+        f"Вопрос пользователя: {user_question}"
+    )
+
+
 async def ask_ai(prompt):
     if not gemini_client:
-        return "ИИ-учитель пока не подключён. Нужно добавить GEMINI_API_KEY в переменные окружения."
+        return (
+            "🤖 ИИ-учитель пока не подключён.\n\n"
+            "Нужно добавить GEMINI_API_KEY в переменные окружения."
+        )
 
     def run():
         response = gemini_client.models.generate_content(
@@ -159,24 +187,9 @@ async def ask_ai(prompt):
         return f"Ошибка ИИ: {e}"
 
 
-def build_teacher_prompt(user_question, last_word=None):
-    word_context = ""
-    if last_word:
-        word_context = (
-            f"\nТекущее слово пользователя:\n"
-            f"Арабский: {last_word.get('arabic')}\n"
-            f"Перевод: {last_word.get('russian')}\n"
-        )
-
-    return (
-        "Ты помощник по изучению коранического арабского языка. "
-        "Отвечай на русском языке. Объясняй просто, кратко и понятно. "
-        "Ты не муфтий и не даёшь фетвы. Не делай богословских постановлений. "
-        "Фокусируйся только на языке: значение слова, корень, форма, запоминание, пример употребления. "
-        "Если вопрос религиозно-правовой, мягко скажи обратиться к знающему человеку.\n"
-        f"{word_context}\n"
-        f"Вопрос пользователя: {user_question}"
-    )
+async def send_long_message(bot, chat_id, text):
+    for i in range(0, len(text), 3500):
+        await bot.send_message(chat_id=chat_id, text=text[i:i + 3500])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,7 +199,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ассаляму алейкум! 📖\n\n"
         "Добро пожаловать в бот для изучения слов Корана.\n\n"
-        "Нажмите «Новое слово» или «Учитель».",
+        "📖 Нажмите «Новое слово», чтобы учить слова.\n"
+        "🤖 Нажмите «Учитель» или просто напишите вопрос в чат — ИИ поможет с арабским словом, корнем, переводом и запоминанием.",
         reply_markup=main_menu(),
     )
 
@@ -243,11 +257,6 @@ async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_long_message(bot, chat_id, text):
-    for i in range(0, len(text), 3500):
-        await bot.send_message(chat_id=chat_id, text=text[i:i + 3500])
-
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -267,6 +276,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         word = df.loc[idx]
+
         context.user_data["last_word"] = {
             "arabic": str(word["كلمة"]),
             "russian": str(word["слово"]),
@@ -285,13 +295,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(context.bot, chat_id, answer)
 
     elif data == "cmd_teacher":
-        context.user_data["ai_mode"] = True
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                "🤖 Режим учителя включён.\n\n"
-                "Задай вопрос по арабскому слову, корню, переводу или запоминанию.\n"
-                "Например: «Объясни слово رَحْمَةٌ»."
+                "🤖 ИИ-учитель готов помочь.\n\n"
+                "Ты можешь написать вопрос прямо в чат бота.\n\n"
+                "Примеры:\n"
+                "• Объясни слово رَحْمَةٌ\n"
+                "• Какой корень у слова كِتَابٌ?\n"
+                "• Как запомнить слово صَبْرٌ?\n"
+                "• Чем отличаются نُورٌ и هُدًى?\n\n"
+                "ИИ отвечает только как помощник по языку, не как муфтий."
             ),
         )
 
@@ -346,6 +360,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text="Вы пока не выучили ни одного слова.")
         else:
             text = "✅ Ваши выученные слова:\n\n"
+
             for _, r in learned_words.iterrows():
                 text += f"{r['слово']} — {r['كلمة']}\n"
 
@@ -355,6 +370,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df["learned"] = False
         df["last_review"] = pd.NaT
         df["interval"] = 1
+
         save_user_words(user_id, df)
 
         await context.bot.send_message(chat_id=chat_id, text="🔄 Прогресс сброшен.")
