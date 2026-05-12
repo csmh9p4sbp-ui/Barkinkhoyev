@@ -1,5 +1,6 @@
 import os
 import shutil
+import asyncio
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
@@ -9,19 +10,31 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 from matplotlib import font_manager
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from google import genai
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 WORDS_FILE = "words.csv"
 USERS_DIR = "users"
-TEMPLATE_FILE = "card_template.PNG"
+TEMPLATE_FILE = "card_template.png"
 
 os.makedirs(USERS_DIR, exist_ok=True)
 
 token = os.environ.get("BOT_TOKEN")
 if not token:
     raise ValueError("Ошибка: переменная BOT_TOKEN не установлена!")
+
+gemini_key = os.environ.get("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 def get_user_words_file(user_id):
@@ -66,11 +79,8 @@ def fit_text(draw, text, max_width, start_size, min_size=40):
     while size >= min_size:
         font = ImageFont.truetype(font_path, size)
         bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-
-        if text_width <= max_width:
+        if bbox[2] - bbox[0] <= max_width:
             return font
-
         size -= 5
 
     return ImageFont.truetype(font_path, min_size)
@@ -78,7 +88,7 @@ def fit_text(draw, text, max_width, start_size, min_size=40):
 
 def create_word_card(arabic_word, russian_word):
     if not os.path.exists(TEMPLATE_FILE):
-        raise FileNotFoundError("Не найден файл card_template.PNG")
+        raise FileNotFoundError("Не найден файл card_template.png")
 
     img = Image.open(TEMPLATE_FILE).convert("RGB")
     draw = ImageDraw.Draw(img)
@@ -101,7 +111,7 @@ def create_word_card(arabic_word, russian_word):
         ((width - arabic_width) / 2, arabic_y - arabic_height / 2),
         arabic_word,
         font=arabic_font,
-        fill="#064d36"
+        fill="#064d36",
     )
 
     russian_bbox = draw.textbbox((0, 0), russian_word, font=russian_font)
@@ -112,24 +122,61 @@ def create_word_card(arabic_word, russian_word):
         ((width - russian_width) / 2, russian_y - russian_height / 2),
         russian_word,
         font=russian_font,
-        fill="#064d36"
+        fill="#064d36",
     )
 
     bio = BytesIO()
     bio.name = "word_card.png"
     img.save(bio, "PNG")
     bio.seek(0)
-
     return bio
 
 
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 Новое слово", callback_data="cmd_word")],
+        [InlineKeyboardButton("🤖 Учитель", callback_data="cmd_teacher")],
         [InlineKeyboardButton("📊 Прогресс", callback_data="cmd_progress")],
         [InlineKeyboardButton("✅ Выученные", callback_data="cmd_learned")],
         [InlineKeyboardButton("🔄 Начать заново", callback_data="cmd_reset")],
     ])
+
+
+async def ask_ai(prompt):
+    if not gemini_client:
+        return "ИИ-учитель пока не подключён. Нужно добавить GEMINI_API_KEY в переменные окружения."
+
+    def run():
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+        return response.text or "Не получилось получить ответ."
+
+    try:
+        return await asyncio.to_thread(run)
+    except Exception as e:
+        return f"Ошибка ИИ: {e}"
+
+
+def build_teacher_prompt(user_question, last_word=None):
+    word_context = ""
+    if last_word:
+        word_context = (
+            f"\nТекущее слово пользователя:\n"
+            f"Арабский: {last_word.get('arabic')}\n"
+            f"Перевод: {last_word.get('russian')}\n"
+        )
+
+    return (
+        "Ты помощник по изучению коранического арабского языка. "
+        "Отвечай на русском языке. Объясняй просто, кратко и понятно. "
+        "Ты не муфтий и не даёшь фетвы. Не делай богословских постановлений. "
+        "Фокусируйся только на языке: значение слова, корень, форма, запоминание, пример употребления. "
+        "Если вопрос религиозно-правовой, мягко скажи обратиться к знающему человеку.\n"
+        f"{word_context}\n"
+        f"Вопрос пользователя: {user_question}"
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,12 +186,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ассаляму алейкум! 📖\n\n"
         "Добро пожаловать в бот для изучения слов Корана.\n\n"
-        "Нажмите «Новое слово».",
-        reply_markup=main_menu()
+        "Нажмите «Новое слово» или «Учитель».",
+        reply_markup=main_menu(),
     )
 
 
-async def send_new_word(user_id, chat_id, bot):
+async def send_new_word(user_id, chat_id, bot, context=None):
     df = load_user_words(user_id)
     today = datetime.now().replace(microsecond=0)
 
@@ -163,7 +210,18 @@ async def send_new_word(user_id, chat_id, bot):
     word = pool.sample(1).iloc[0]
     idx = word.name
 
-    buttons = [[InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{idx}")]]
+    if context:
+        context.user_data["last_word"] = {
+            "arabic": str(word["كلمة"]),
+            "russian": str(word["слово"]),
+            "idx": int(idx),
+        }
+
+    buttons = [
+        [InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{idx}")],
+        [InlineKeyboardButton("🤖 Объяснить слово", callback_data=f"explain_{idx}")],
+    ]
+
     if word["learned"]:
         buttons.append([InlineKeyboardButton("💡 Помню", callback_data=f"remember_{idx}")])
 
@@ -172,7 +230,7 @@ async def send_new_word(user_id, chat_id, bot):
     await bot.send_photo(
         chat_id=chat_id,
         photo=card,
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -180,8 +238,14 @@ async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_new_word(
         update.effective_user.id,
         update.effective_chat.id,
-        context.bot
+        context.bot,
+        context,
     )
+
+
+async def send_long_message(bot, chat_id, text):
+    for i in range(0, len(text), 3500):
+        await bot.send_message(chat_id=chat_id, text=text[i:i + 3500])
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,7 +259,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df = load_user_words(user_id)
 
-    if data.startswith("learned_") or data.startswith("remember_"):
+    if data.startswith("explain_"):
+        idx = int(data.split("_")[1])
+
+        if idx not in df.index:
+            await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
+            return
+
+        word = df.loc[idx]
+        context.user_data["last_word"] = {
+            "arabic": str(word["كلمة"]),
+            "russian": str(word["слово"]),
+            "idx": int(idx),
+        }
+
+        await context.bot.send_message(chat_id=chat_id, text="🤖 Объясняю слово...")
+
+        prompt = build_teacher_prompt(
+            f"Объясни слово {word['كلمة']} — {word['слово']}. "
+            "Дай значение, простое объяснение, возможный корень если знаешь, и короткую ассоциацию для запоминания.",
+            context.user_data["last_word"],
+        )
+
+        answer = await ask_ai(prompt)
+        await send_long_message(context.bot, chat_id, answer)
+
+    elif data == "cmd_teacher":
+        context.user_data["ai_mode"] = True
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🤖 Режим учителя включён.\n\n"
+                "Задай вопрос по арабскому слову, корню, переводу или запоминанию.\n"
+                "Например: «Объясни слово رَحْمَةٌ»."
+            ),
+        )
+
+    elif data.startswith("learned_") or data.startswith("remember_"):
         idx = int(data.split("_")[1])
 
         if idx not in df.index:
@@ -218,10 +318,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        await send_new_word(user_id, chat_id, context.bot)
+        await send_new_word(user_id, chat_id, context.bot, context)
 
     elif data == "cmd_word":
-        await send_new_word(user_id, chat_id, context.bot)
+        await send_new_word(user_id, chat_id, context.bot, context)
 
     elif data == "cmd_progress":
         learned = int(df["learned"].sum())
@@ -236,7 +336,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Выучено: {learned} из {total}\n"
                 f"📖 Осталось: {remaining}\n"
                 f"📈 Прогресс: {percent}%"
-            )
+            ),
         )
 
     elif data == "cmd_learned":
@@ -249,8 +349,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for _, r in learned_words.iterrows():
                 text += f"{r['слово']} — {r['كلمة']}\n"
 
-            for i in range(0, len(text), 3500):
-                await context.bot.send_message(chat_id=chat_id, text=text[i:i + 3500])
+            await send_long_message(context.bot, chat_id, text)
 
     elif data == "cmd_reset":
         df["learned"] = False
@@ -259,6 +358,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_user_words(user_id, df)
 
         await context.bot.send_message(chat_id=chat_id, text="🔄 Прогресс сброшен.")
+
+
+async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text.strip()
+
+    if not user_text:
+        return
+
+    last_word = context.user_data.get("last_word")
+
+    await update.message.reply_text("🤖 Думаю над ответом...")
+
+    prompt = build_teacher_prompt(user_text, last_word)
+    answer = await ask_ai(prompt)
+
+    await send_long_message(context.bot, update.effective_chat.id, answer)
 
 
 async def error_handler(update, context):
@@ -270,6 +385,7 @@ app = ApplicationBuilder().token(token).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("word", daily_word))
 app.add_handler(CallbackQueryHandler(button_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_text_handler))
 app.add_error_handler(error_handler)
 
 app.run_polling()
