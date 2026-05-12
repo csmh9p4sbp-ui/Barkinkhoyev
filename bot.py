@@ -307,10 +307,7 @@ async def ask_ai(prompt):
                         "Отвечай кратко, понятно, на русском языке."
                     ),
                 },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
+                {"role": "user", "content": prompt},
             ],
             temperature=0.4,
             max_tokens=500,
@@ -333,10 +330,8 @@ async def ask_ai(prompt):
 
         return (
             "Ассаламу алейкум!\n\n"
-            "Сейчас ИИ-учитель временно недоступен. "
-            "Но бот продолжает работать: можно учить слова, проходить тестирование и смотреть выученные слова."
+            "Сейчас ИИ-учитель временно недоступен."
         )
-
 
 async def send_long_message(bot, chat_id, text):
     for i in range(0, len(text), 3500):
@@ -367,13 +362,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ассаляму алейкум! 📖\n\n"
         "Этот бот помогает заучивать часто встречающиеся слова Корана.\n\n"
-        "Как работает бот:\n"
-        "📖 отправляет новое слово в виде карточки;\n"
-        "✅ сохраняет выученные слова отдельно для каждого пользователя;\n"
-        "📋 предлагает тестирование после 5 выученных слов, а затем после каждых 10 новых слов;\n"
-        "🔁 возвращает на повторение слова, в которых были ошибки;\n"
-        "📑 отвечает на вопросы по арабскому языку прямо в чате.\n\n"
-        "Нажми «Отправь новое слово», чтобы начать.",
+        "📖 Отправляет новые слова в красивых карточках;\n"
+        "📋 Проводит тестирование по выученным словам;\n"
+        "🔁 Возвращает забытые слова на повторение;\n"
+        "📑 Отвечает на вопросы по арабскому языку;\n"
+        "📊 Сохраняет личный прогресс каждого пользователя.\n\n"
+        "После первых 5 выученных слов бот предложит пройти первое тестирование.",
         reply_markup=main_menu(),
     )
 
@@ -385,10 +379,7 @@ async def send_quiz_offer(user_id, chat_id, bot):
     if learned_count < 5:
         await bot.send_message(
             chat_id=chat_id,
-            text=(
-                "📋 Тестирование доступно после 5 выученных слов.\n\n"
-                "Продолжай изучение, и бот сам предложит пройти первый тест."
-            ),
+            text="📋 Тестирование доступно после 5 выученных слов.",
         )
         return
 
@@ -496,7 +487,7 @@ async def start_quiz(user_id, chat_id, bot, context, count):
     if len(learned_words) < 5:
         await bot.send_message(
             chat_id=chat_id,
-            text="📋 Тестирование осуществляется только по уже выученным словам.\n\nСначала выучи хотя бы 5 слов.",
+            text="📋 Тестирование проводится только по выученным словам.",
         )
         return
 
@@ -548,7 +539,7 @@ async def finish_quiz(user_id, chat_id, bot, context):
         text += "\n\n❌ Слова для повторного изучения:\n"
         for item in wrong:
             text += f"{item['arabic']} — {item['russian']}\n"
-        text += "\nЭти слова снова будут попадаться тебе как новые."
+
     else:
         text += "\n\n🎉 Отлично! Ошибок нет."
 
@@ -599,7 +590,7 @@ async def send_next_quiz_question(user_id, chat_id, bot, context):
     await bot.send_photo(
         chat_id=chat_id,
         photo=card,
-        caption=f"📋 Вопрос {session['current'] + 1} из {session['total']}\nВыбери правильный перевод:",
+        caption=f"📋 Вопрос {session['current'] + 1} из {session['total']}",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -608,7 +599,6 @@ async def handle_quiz_answer(user_id, chat_id, selected_index, query, context):
     session = context.user_data.get("quiz_session")
 
     if not session:
-        await context.bot.send_message(chat_id=chat_id, text="Тестирование устарело. Начни заново.")
         return
 
     try:
@@ -626,7 +616,6 @@ async def handle_quiz_answer(user_id, chat_id, selected_index, query, context):
             "idx": question.get("_idx"),
             "arabic": str(question["كلمة"]),
             "russian": str(question["слово"]),
-            "selected": selected,
         })
 
     session["current"] += 1
@@ -648,6 +637,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df = load_user_words(user_id)
 
     try:
+
         if data.startswith("quiz_start_"):
             count = int(data.replace("quiz_start_", "", 1))
             await safe_delete_message(query.message)
@@ -657,41 +647,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_index = data.replace("quiz_answer_", "", 1)
             await handle_quiz_answer(user_id, chat_id, selected_index, query, context)
 
-        elif data == "cmd_reminders":
-            reminders = load_reminders()
-            enabled = str(user_id) in reminders
-
-            if enabled:
-                buttons = [[InlineKeyboardButton("🔕 Выключить напоминания", callback_data="reminder_off")]]
-                text = "🔔 Напоминания включены."
-            else:
-                buttons = [[InlineKeyboardButton("🔔 Включить напоминания", callback_data="reminder_on")]]
-                text = "🔔 Можно включить напоминание. Сейчас оно сохраняется в настройках."
-
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-
-        elif data == "reminder_on":
-            reminders = load_reminders()
-            reminders[str(user_id)] = chat_id
-            save_reminders(reminders)
-            await context.bot.send_message(chat_id=chat_id, text="🔔 Напоминания включены.")
-
-        elif data == "reminder_off":
-            reminders = load_reminders()
-            reminders.pop(str(user_id), None)
-            save_reminders(reminders)
-            await context.bot.send_message(chat_id=chat_id, text="🔕 Напоминания выключены.")
-
         elif data.startswith("explain_"):
             idx = int(data.split("_")[1])
-
-            if idx not in df.index:
-                await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
-                return
 
             word = df.loc[idx]
 
@@ -704,8 +661,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text="📑 Объясняю слово...")
 
             prompt = build_teacher_prompt(
-                f"Объясни слово {word['كلمة']} — {word['слово']}. "
-                "Дай значение, простое объяснение, возможный корень если знаешь, и короткую ассоциацию для запоминания.",
+                f"Объясни слово {word['كلمة']} — {word['слово']}",
                 context.user_data["last_word"],
             )
 
@@ -713,11 +669,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_long_message(context.bot, chat_id, answer)
 
         elif data.startswith("learned_") or data.startswith("remember_") or data.startswith("forgot_"):
-            idx = int(data.split("_")[1])
 
-            if idx not in df.index:
-                await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
-                return
+            idx = int(data.split("_")[1])
 
             if data.startswith("learned_"):
                 df.at[idx, "learned"] = True
@@ -735,12 +688,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 df.at[idx, "interval"] = 1
 
             save_user_words(user_id, df)
+
             await safe_delete_message(query.message)
 
             updated_df = load_user_words(user_id)
             new_learned_count = int(updated_df["learned"].sum())
 
             await maybe_offer_quiz(user_id, chat_id, context.bot, new_learned_count)
+
             await send_new_word(user_id, chat_id, context.bot, context)
 
         elif data == "cmd_word":
@@ -750,20 +705,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_quiz_offer(user_id, chat_id, context.bot)
 
         elif data == "cmd_learned":
+
             learned_words = df[df["learned"]]
 
             if learned_words.empty:
-                await context.bot.send_message(chat_id=chat_id, text="Вы пока не выучили ни одного слова.")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Вы пока не выучили ни одного слова."
+                )
             else:
                 text = "✅ Ваши выученные слова:\n\n"
+
                 for _, r in learned_words.iterrows():
                     text += f"{r['слово']} — {r['كلمة']}\n"
+
                 await send_long_message(context.bot, chat_id, text)
 
         elif data == "cmd_reset":
+
             df["learned"] = False
             df["last_review"] = pd.NaT
             df["interval"] = 1
+
             save_user_words(user_id, df)
 
             settings = load_user_settings(user_id)
@@ -772,31 +735,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             context.user_data.pop("quiz_session", None)
 
-            await context.bot.send_message(chat_id=chat_id, text="🔄 Прогресс сброшен.")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="🔄 Прогресс сброшен."
+            )
 
     except Exception as e:
         error_text = str(e)
-        print(f"Ошибка в button_handler: {error_text}")
 
         if "Timed out" in error_text:
             return
 
+        print(f"Ошибка в button_handler: {error_text}")
+
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Произошла ошибка. Попробуй нажать кнопку ещё раз."
+                text="Произошла ошибка. Попробуй ещё раз."
             )
         except Exception:
             pass
 
 
 async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
     now = datetime.now().timestamp()
 
     last_time = LAST_AI_REQUESTS.get(user_id, 0)
+
     if now - last_time < AI_COOLDOWN_SECONDS:
-        await update.message.reply_text("⏳ Подожди немного перед следующим вопросом к ИИ.")
+        await update.message.reply_text(
+            "⏳ Подожди немного перед следующим вопросом."
+        )
         return
 
     LAST_AI_REQUESTS[user_id] = now
@@ -813,7 +784,11 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = build_teacher_prompt(user_text, last_word)
     answer = await ask_ai(prompt)
 
-    await send_long_message(context.bot, update.effective_chat.id, answer)
+    await send_long_message(
+        context.bot,
+        update.effective_chat.id,
+        answer
+    )
 
 
 async def error_handler(update, context):
@@ -824,10 +799,10 @@ app = (
     ApplicationBuilder()
     .token(token)
     .job_queue(None)
-    .connect_timeout(30)
-    .read_timeout(30)
-    .write_timeout(30)
-    .pool_timeout(30)
+    .connect_timeout(60)
+    .read_timeout(60)
+    .write_timeout(60)
+    .pool_timeout(60)
     .build()
 )
 
