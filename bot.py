@@ -465,10 +465,11 @@ async def send_new_word(user_id, chat_id, bot, context=None):
     card = create_word_card(word["كلمة"], word["слово"])
 
     await bot.send_photo(
-        chat_id=chat_id,
-        photo=card,
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    chat_id=chat_id,
+    photo=card,
+    caption=f"{word['كلمة']} — {word['слово']}",
+    reply_markup=InlineKeyboardMarkup(buttons),
+)
 
 
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
