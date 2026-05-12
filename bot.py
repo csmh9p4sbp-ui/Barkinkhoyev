@@ -21,7 +21,6 @@ from telegram.ext import (
     filters,
 )
 
-
 WORDS_FILE = "words.csv"
 USERS_DIR = "users"
 TEMPLATE_FILE = "card_template.PNG"
@@ -34,7 +33,7 @@ if not token:
 
 gemini_key = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 
 def get_user_words_file(user_id):
@@ -158,9 +157,10 @@ def build_teacher_prompt(user_question, last_word=None):
 
     return (
         "Ты помощник по изучению коранического арабского языка. "
-        "Отвечай на русском языке. Объясняй просто, кратко и понятно. "
+        "Отвечай на русском языке. Объясняй кратко, просто и понятно. "
         "Ты не муфтий и не даёшь фетвы. Не делай богословских постановлений. "
         "Фокусируйся только на языке: значение слова, корень, форма, перевод, запоминание. "
+        "Ответ должен быть не длиннее 6-8 предложений. "
         "Если вопрос религиозно-правовой, мягко скажи обратиться к знающему человеку.\n"
         f"{word_context}\n"
         f"Вопрос пользователя: {user_question}"
@@ -183,7 +183,17 @@ async def ask_ai(prompt):
 
     try:
         return await asyncio.to_thread(run)
+
     except Exception as e:
+        error_text = str(e)
+
+        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            return (
+                "🤖 Сейчас лимит бесплатных запросов Gemini исчерпан.\n\n"
+                "Попробуй ещё раз позже. Обычно лимит обновляется автоматически.\n\n"
+                "Можно также проверить лимиты в Google AI Studio: ai.dev/rate-limit"
+            )
+
         return f"Ошибка ИИ: {e}"
 
 
