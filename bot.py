@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 from bidi.algorithm import get_display
 from matplotlib import font_manager
-from google import genai
+from groq import Groq
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,15 +29,18 @@ TEMPLATE_FILE = "card_template.PNG"
 REMINDERS_FILE = "reminders.json"
 ARABIC_FONT_FILE = "NotoNaskhArabic-Regular.ttf"
 
+AI_COOLDOWN_SECONDS = 12
+LAST_AI_REQUESTS = {}
+
 os.makedirs(USERS_DIR, exist_ok=True)
 
 token = os.environ.get("BOT_TOKEN")
 if not token:
     raise ValueError("Ошибка: переменная BOT_TOKEN не установлена!")
 
-gemini_key = os.environ.get("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+groq_key = os.environ.get("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_key) if groq_key else None
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 
 def get_user_words_file(user_id):
@@ -275,22 +278,40 @@ def build_teacher_prompt(user_question, last_word=None):
 
 
 async def ask_ai(prompt):
-    if not gemini_client:
-        return "🤖 ИИ-учитель пока не подключён.\n\nНужно добавить GEMINI_API_KEY в переменные окружения."
+    if not groq_client:
+        return "🤖 ИИ-учитель пока не подключён.\n\nНужно добавить GROQ_API_KEY в переменные окружения."
 
     def run():
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты языковой помощник по кораническому арабскому. "
+                        "Отвечай кратко, понятно, на русском языке."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            temperature=0.4,
+            max_tokens=500,
         )
-        return response.text or "Не получилось получить ответ."
+
+        return response.choices[0].message.content or "Не получилось получить ответ."
 
     try:
         return await asyncio.to_thread(run)
+
     except Exception as e:
         error_text = str(e)
-        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            return "🤖 Сейчас лимит бесплатных запросов Gemini исчерпан.\n\nПопробуй ещё раз позже."
+
+        if "rate_limit" in error_text.lower() or "429" in error_text:
+            return "🤖 Сейчас лимит бесплатных запросов Groq временно исчерпан.\n\nПопробуй ещё раз позже."
+
         return f"Ошибка ИИ: {e}"
 
 
@@ -692,6 +713,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    now = datetime.now().timestamp()
+
+    last_time = LAST_AI_REQUESTS.get(user_id, 0)
+    if now - last_time < AI_COOLDOWN_SECONDS:
+        await update.message.reply_text("⏳ Подожди немного перед следующим вопросом к ИИ.")
+        return
+
+    LAST_AI_REQUESTS[user_id] = now
+
     user_text = update.message.text.strip()
 
     if not user_text:
