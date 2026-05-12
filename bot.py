@@ -27,6 +27,7 @@ WORDS_FILE = "words.csv"
 USERS_DIR = "users"
 TEMPLATE_FILE = "card_template.PNG"
 REMINDERS_FILE = "reminders.json"
+ARABIC_FONT_FILE = "NotoNaskhArabic-Regular.ttf"
 
 os.makedirs(USERS_DIR, exist_ok=True)
 
@@ -116,15 +117,29 @@ def save_user_words(user_id, df):
     df.to_csv(get_user_words_file(user_id), index=False, encoding="utf-8-sig")
 
 
-def fit_text(draw, text, max_width, start_size, min_size=40):
-    font_path = font_manager.findfont("DejaVu Sans")
+def get_arabic_font_path():
+    if os.path.exists(ARABIC_FONT_FILE):
+        return ARABIC_FONT_FILE
+    return font_manager.findfont("DejaVu Sans")
+
+
+def get_russian_font_path():
+    return font_manager.findfont("DejaVu Sans")
+
+
+def fit_text(draw, text, max_width, start_size, min_size=40, font_path=None):
+    if font_path is None:
+        font_path = get_russian_font_path()
+
     size = start_size
 
     while size >= min_size:
         font = ImageFont.truetype(font_path, size)
         bbox = draw.textbbox((0, 0), text, font=font)
+
         if bbox[2] - bbox[0] <= max_width:
             return font
+
         size -= 5
 
     return ImageFont.truetype(font_path, min_size)
@@ -134,7 +149,13 @@ def draw_centered_text(draw, text, y, font, width, fill):
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    draw.text(((width - text_width) / 2, y - text_height / 2), text, font=font, fill=fill)
+
+    draw.text(
+        ((width - text_width) / 2, y - text_height / 2),
+        text,
+        font=font,
+        fill=fill,
+    )
 
 
 def create_word_card(arabic_word, russian_word=None):
@@ -147,19 +168,52 @@ def create_word_card(arabic_word, russian_word=None):
         draw = ImageDraw.Draw(img)
         width, height = img.size
 
-        arabic_word = get_display(arabic_reshaper.reshape(str(arabic_word)))
-        arabic_font = fit_text(draw, arabic_word, int(width * 0.70), 175, 90)
-        draw_centered_text(draw, arabic_word, int(height * 0.39), arabic_font, width, "#064d36")
+        arabic_display = get_display(arabic_reshaper.reshape(str(arabic_word)))
+
+        arabic_font = fit_text(
+            draw,
+            arabic_display,
+            int(width * 0.70),
+            190,
+            90,
+            font_path=get_arabic_font_path(),
+        )
+
+        draw_centered_text(
+            draw,
+            arabic_display,
+            int(height * 0.39),
+            arabic_font,
+            width,
+            "#064d36",
+        )
 
         if russian_word is not None:
-            russian_word = str(russian_word)
-            russian_font = fit_text(draw, russian_word, int(width * 0.65), 78, 45)
-            draw_centered_text(draw, russian_word, int(height * 0.76), russian_font, width, "#064d36")
+            russian_text = str(russian_word)
+
+            russian_font = fit_text(
+                draw,
+                russian_text,
+                int(width * 0.65),
+                78,
+                45,
+                font_path=get_russian_font_path(),
+            )
+
+            draw_centered_text(
+                draw,
+                russian_text,
+                int(height * 0.76),
+                russian_font,
+                width,
+                "#064d36",
+            )
 
         bio = BytesIO()
         bio.name = "word_card.png"
         img.save(bio, "PNG")
         bio.seek(0)
+
         return bio
 
     except Exception as e:
@@ -169,15 +223,21 @@ def create_word_card(arabic_word, russian_word=None):
         draw = ImageDraw.Draw(img)
         width, height = img.size
 
-        font = ImageFont.truetype(font_manager.findfont("DejaVu Sans"), 80)
+        fallback_font = ImageFont.truetype(get_russian_font_path(), 70)
         text = f"{arabic_word}\n{russian_word or ''}"
 
-        draw.text((width / 2 - 250, height / 2 - 80), text, font=font, fill="#064d36")
+        draw.text(
+            (width / 2 - 250, height / 2 - 80),
+            text,
+            font=fallback_font,
+            fill="#064d36",
+        )
 
         bio = BytesIO()
         bio.name = "word_card.png"
         img.save(bio, "PNG")
         bio.seek(0)
+
         return bio
 
 
@@ -193,6 +253,7 @@ def main_menu():
 
 def build_teacher_prompt(user_question, last_word=None):
     word_context = ""
+
     if last_word:
         word_context = (
             f"\nТекущее слово пользователя:\n"
@@ -218,7 +279,10 @@ async def ask_ai(prompt):
         return "🤖 ИИ-учитель пока не подключён.\n\nНужно добавить GEMINI_API_KEY в переменные окружения."
 
     def run():
-        response = gemini_client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
         return response.text or "Не получилось получить ответ."
 
     try:
@@ -275,10 +339,13 @@ async def send_quiz_offer(user_id, chat_id, bot):
         return
 
     options = [5]
+
     if learned_count >= 10:
         options.append(10)
+
     if learned_count >= 20:
         options.append(20)
+
     if learned_count not in options:
         options.append(learned_count)
 
@@ -339,7 +406,12 @@ async def send_new_word(user_id, chat_id, bot, context=None):
 
 
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_new_word(update.effective_user.id, update.effective_chat.id, context.bot, context)
+    await send_new_word(
+        update.effective_user.id,
+        update.effective_chat.id,
+        context.bot,
+        context,
+    )
 
 
 async def start_quiz(user_id, chat_id, bot, context, count):
@@ -372,6 +444,7 @@ async def start_quiz(user_id, chat_id, bot, context, count):
 
 async def send_next_quiz_question(user_id, chat_id, bot, context):
     session = context.user_data.get("quiz_session")
+
     if not session:
         return
 
@@ -400,7 +473,14 @@ async def send_next_quiz_question(user_id, chat_id, bot, context):
     correct_answer = str(question["слово"])
     arabic_word = str(question["كلمة"])
 
-    wrong_pool = df[df["слово"].astype(str) != correct_answer]["слово"].dropna().astype(str).unique().tolist()
+    wrong_pool = (
+        df[df["слово"].astype(str) != correct_answer]["слово"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
     wrong_answers = random.sample(wrong_pool, min(3, len(wrong_pool)))
 
     options = wrong_answers + [correct_answer]
@@ -487,7 +567,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buttons = [[InlineKeyboardButton("🔔 Включить напоминания", callback_data="reminder_on")]]
                 text = "🔔 Можно включить напоминание. Сейчас оно сохраняется в настройках."
 
-            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(buttons))
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
         elif data == "reminder_on":
             reminders = load_reminders()
