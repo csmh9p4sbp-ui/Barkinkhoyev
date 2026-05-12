@@ -54,8 +54,11 @@ def load_json_file(path, default):
 
 
 def save_json_file(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Ошибка сохранения JSON: {e}")
 
 
 def load_reminders():
@@ -135,28 +138,47 @@ def draw_centered_text(draw, text, y, font, width, fill):
 
 
 def create_word_card(arabic_word, russian_word=None):
-    if os.path.exists(TEMPLATE_FILE):
-        img = Image.open(TEMPLATE_FILE).convert("RGB")
-    else:
+    try:
+        if os.path.exists(TEMPLATE_FILE):
+            img = Image.open(TEMPLATE_FILE).convert("RGB")
+        else:
+            img = Image.new("RGB", (1280, 720), "#f6ead7")
+
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        arabic_word = get_display(arabic_reshaper.reshape(str(arabic_word)))
+        arabic_font = fit_text(draw, arabic_word, int(width * 0.70), 175, 90)
+        draw_centered_text(draw, arabic_word, int(height * 0.39), arabic_font, width, "#064d36")
+
+        if russian_word is not None:
+            russian_word = str(russian_word)
+            russian_font = fit_text(draw, russian_word, int(width * 0.65), 78, 45)
+            draw_centered_text(draw, russian_word, int(height * 0.76), russian_font, width, "#064d36")
+
+        bio = BytesIO()
+        bio.name = "word_card.png"
+        img.save(bio, "PNG")
+        bio.seek(0)
+        return bio
+
+    except Exception as e:
+        print(f"Ошибка создания карточки: {e}")
+
         img = Image.new("RGB", (1280, 720), "#f6ead7")
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
 
-    draw = ImageDraw.Draw(img)
-    width, height = img.size
+        font = ImageFont.truetype(font_manager.findfont("DejaVu Sans"), 80)
+        text = f"{arabic_word}\n{russian_word or ''}"
 
-    arabic_word = get_display(arabic_reshaper.reshape(str(arabic_word)))
-    arabic_font = fit_text(draw, arabic_word, int(width * 0.70), 175, 90)
-    draw_centered_text(draw, arabic_word, int(height * 0.39), arabic_font, width, "#064d36")
+        draw.text((width / 2 - 250, height / 2 - 80), text, font=font, fill="#064d36")
 
-    if russian_word is not None:
-        russian_word = str(russian_word)
-        russian_font = fit_text(draw, russian_word, int(width * 0.65), 78, 45)
-        draw_centered_text(draw, russian_word, int(height * 0.76), russian_font, width, "#064d36")
-
-    bio = BytesIO()
-    bio.name = "word_card.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-    return bio
+        bio = BytesIO()
+        bio.name = "word_card.png"
+        img.save(bio, "PNG")
+        bio.seek(0)
+        return bio
 
 
 def main_menu():
@@ -211,6 +233,23 @@ async def ask_ai(prompt):
 async def send_long_message(bot, chat_id, text):
     for i in range(0, len(text), 3500):
         await bot.send_message(chat_id=chat_id, text=text[i:i + 3500])
+
+
+async def safe_query_answer(query):
+    try:
+        await query.answer()
+    except Exception as e:
+        error_text = str(e)
+        if "Query is too old" in error_text or "query id is invalid" in error_text:
+            return
+        print(f"Ошибка query.answer: {e}")
+
+
+async def safe_delete_message(message):
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,17 +451,13 @@ async def handle_quiz_answer(user_id, chat_id, selected_index, query, context):
     session["current"] += 1
     context.user_data["quiz_session"] = session
 
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-
+    await safe_delete_message(query.message)
     await send_next_quiz_question(user_id, chat_id, context.bot, context)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_query_answer(query)
 
     user_id = query.from_user.id
     chat_id = query.message.chat_id
@@ -431,147 +466,145 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df = load_user_words(user_id)
 
-    if data.startswith("quiz_start_"):
-        count = int(data.replace("quiz_start_", "", 1))
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        await start_quiz(user_id, chat_id, context.bot, context, count)
+    try:
+        if data.startswith("quiz_start_"):
+            count = int(data.replace("quiz_start_", "", 1))
+            await safe_delete_message(query.message)
+            await start_quiz(user_id, chat_id, context.bot, context, count)
 
-    elif data.startswith("quiz_answer_"):
-        selected_index = data.replace("quiz_answer_", "", 1)
-        await handle_quiz_answer(user_id, chat_id, selected_index, query, context)
+        elif data.startswith("quiz_answer_"):
+            selected_index = data.replace("quiz_answer_", "", 1)
+            await handle_quiz_answer(user_id, chat_id, selected_index, query, context)
 
-    elif data == "cmd_reminders":
-        reminders = load_reminders()
-        enabled = str(user_id) in reminders
+        elif data == "cmd_reminders":
+            reminders = load_reminders()
+            enabled = str(user_id) in reminders
 
-        if enabled:
-            buttons = [[InlineKeyboardButton("🔕 Выключить напоминания", callback_data="reminder_off")]]
-            text = "🔔 Напоминания включены."
-        else:
-            buttons = [[InlineKeyboardButton("🔔 Включить напоминания", callback_data="reminder_on")]]
-            text = "🔔 Можно включить напоминание. Сейчас оно сохраняется в настройках."
+            if enabled:
+                buttons = [[InlineKeyboardButton("🔕 Выключить напоминания", callback_data="reminder_off")]]
+                text = "🔔 Напоминания включены."
+            else:
+                buttons = [[InlineKeyboardButton("🔔 Включить напоминания", callback_data="reminder_on")]]
+                text = "🔔 Можно включить напоминание. Сейчас оно сохраняется в настройках."
 
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(buttons))
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(buttons))
 
-    elif data == "reminder_on":
-        reminders = load_reminders()
-        reminders[str(user_id)] = chat_id
-        save_reminders(reminders)
-        await context.bot.send_message(chat_id=chat_id, text="🔔 Напоминания включены.")
+        elif data == "reminder_on":
+            reminders = load_reminders()
+            reminders[str(user_id)] = chat_id
+            save_reminders(reminders)
+            await context.bot.send_message(chat_id=chat_id, text="🔔 Напоминания включены.")
 
-    elif data == "reminder_off":
-        reminders = load_reminders()
-        reminders.pop(str(user_id), None)
-        save_reminders(reminders)
-        await context.bot.send_message(chat_id=chat_id, text="🔕 Напоминания выключены.")
+        elif data == "reminder_off":
+            reminders = load_reminders()
+            reminders.pop(str(user_id), None)
+            save_reminders(reminders)
+            await context.bot.send_message(chat_id=chat_id, text="🔕 Напоминания выключены.")
 
-    elif data.startswith("explain_"):
-        idx = int(data.split("_")[1])
+        elif data.startswith("explain_"):
+            idx = int(data.split("_")[1])
 
-        if idx not in df.index:
-            await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
-            return
+            if idx not in df.index:
+                await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
+                return
 
-        word = df.loc[idx]
+            word = df.loc[idx]
 
-        context.user_data["last_word"] = {
-            "arabic": str(word["كلمة"]),
-            "russian": str(word["слово"]),
-            "idx": int(idx),
-        }
+            context.user_data["last_word"] = {
+                "arabic": str(word["كلمة"]),
+                "russian": str(word["слово"]),
+                "idx": int(idx),
+            }
 
-        await context.bot.send_message(chat_id=chat_id, text="🤖 Объясняю слово...")
+            await context.bot.send_message(chat_id=chat_id, text="🤖 Объясняю слово...")
 
-        prompt = build_teacher_prompt(
-            f"Объясни слово {word['كلمة']} — {word['слово']}. "
-            "Дай значение, простое объяснение, возможный корень если знаешь, и короткую ассоциацию для запоминания.",
-            context.user_data["last_word"],
-        )
+            prompt = build_teacher_prompt(
+                f"Объясни слово {word['كلمة']} — {word['слово']}. "
+                "Дай значение, простое объяснение, возможный корень если знаешь, и короткую ассоциацию для запоминания.",
+                context.user_data["last_word"],
+            )
 
-        answer = await ask_ai(prompt)
-        await send_long_message(context.bot, chat_id, answer)
+            answer = await ask_ai(prompt)
+            await send_long_message(context.bot, chat_id, answer)
 
-    elif data.startswith("learned_") or data.startswith("remember_") or data.startswith("forgot_"):
-        idx = int(data.split("_")[1])
+        elif data.startswith("learned_") or data.startswith("remember_") or data.startswith("forgot_"):
+            idx = int(data.split("_")[1])
 
-        if idx not in df.index:
-            await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
-            return
+            if idx not in df.index:
+                await context.bot.send_message(chat_id=chat_id, text="Ошибка: слово не найдено.")
+                return
 
-        old_learned_count = int(df["learned"].sum())
+            old_learned_count = int(df["learned"].sum())
 
-        if data.startswith("learned_"):
-            df.at[idx, "learned"] = True
-            df.at[idx, "last_review"] = today
-            df.at[idx, "interval"] = 1
+            if data.startswith("learned_"):
+                df.at[idx, "learned"] = True
+                df.at[idx, "last_review"] = today
+                df.at[idx, "interval"] = 1
 
-        elif data.startswith("remember_"):
-            old_interval = int(df.at[idx, "interval"])
-            df.at[idx, "last_review"] = today
-            df.at[idx, "interval"] = min(old_interval * 2, 30)
+            elif data.startswith("remember_"):
+                old_interval = int(df.at[idx, "interval"])
+                df.at[idx, "last_review"] = today
+                df.at[idx, "interval"] = min(old_interval * 2, 30)
 
-        elif data.startswith("forgot_"):
-            df.at[idx, "learned"] = False
-            df.at[idx, "last_review"] = pd.NaT
-            df.at[idx, "interval"] = 1
+            elif data.startswith("forgot_"):
+                df.at[idx, "learned"] = False
+                df.at[idx, "last_review"] = pd.NaT
+                df.at[idx, "interval"] = 1
 
-        save_user_words(user_id, df)
+            save_user_words(user_id, df)
+            await safe_delete_message(query.message)
 
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
+            new_learned_count = int(df["learned"].sum())
 
-        new_learned_count = int(df["learned"].sum())
+            if old_learned_count < 5 <= new_learned_count:
+                await send_quiz_offer(user_id, chat_id, context.bot)
 
-        if old_learned_count < 5 <= new_learned_count:
-            await send_quiz_offer(user_id, chat_id, context.bot)
+            await send_new_word(user_id, chat_id, context.bot, context)
 
-        await send_new_word(user_id, chat_id, context.bot, context)
+        elif data == "cmd_word":
+            await send_new_word(user_id, chat_id, context.bot, context)
 
-    elif data == "cmd_word":
-        await send_new_word(user_id, chat_id, context.bot, context)
+        elif data == "cmd_progress":
+            learned = int(df["learned"].sum())
+            total = len(df)
+            remaining = total - learned
+            percent = int((learned / total) * 100) if total > 0 else 0
 
-    elif data == "cmd_progress":
-        learned = int(df["learned"].sum())
-        total = len(df)
-        remaining = total - learned
-        percent = int((learned / total) * 100) if total > 0 else 0
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"📊 Ваш прогресс\n\n"
+                    f"✅ Выучено: {learned} из {total}\n"
+                    f"📖 Осталось: {remaining}\n"
+                    f"📈 Прогресс: {percent}%"
+                ),
+            )
 
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"📊 Ваш прогресс\n\n"
-                f"✅ Выучено: {learned} из {total}\n"
-                f"📖 Осталось: {remaining}\n"
-                f"📈 Прогресс: {percent}%"
-            ),
-        )
+            if learned >= 5:
+                await send_quiz_offer(user_id, chat_id, context.bot)
 
-        if learned >= 5:
-            await send_quiz_offer(user_id, chat_id, context.bot)
+        elif data == "cmd_learned":
+            learned_words = df[df["learned"]]
 
-    elif data == "cmd_learned":
-        learned_words = df[df["learned"]]
+            if learned_words.empty:
+                await context.bot.send_message(chat_id=chat_id, text="Вы пока не выучили ни одного слова.")
+            else:
+                text = "✅ Ваши выученные слова:\n\n"
+                for _, r in learned_words.iterrows():
+                    text += f"{r['слово']} — {r['كلمة']}\n"
+                await send_long_message(context.bot, chat_id, text)
 
-        if learned_words.empty:
-            await context.bot.send_message(chat_id=chat_id, text="Вы пока не выучили ни одного слова.")
-        else:
-            text = "✅ Ваши выученные слова:\n\n"
-            for _, r in learned_words.iterrows():
-                text += f"{r['слово']} — {r['كلمة']}\n"
-            await send_long_message(context.bot, chat_id, text)
+        elif data == "cmd_reset":
+            df["learned"] = False
+            df["last_review"] = pd.NaT
+            df["interval"] = 1
+            save_user_words(user_id, df)
+            context.user_data.pop("quiz_session", None)
+            await context.bot.send_message(chat_id=chat_id, text="🔄 Прогресс сброшен.")
 
-    elif data == "cmd_reset":
-        df["learned"] = False
-        df["last_review"] = pd.NaT
-        df["interval"] = 1
-        save_user_words(user_id, df)
-        context.user_data.pop("quiz_session", None)
-        await context.bot.send_message(chat_id=chat_id, text="🔄 Прогресс сброшен.")
+    except Exception as e:
+        print(f"Ошибка в button_handler: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="Произошла ошибка. Попробуй нажать кнопку ещё раз.")
 
 
 async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
