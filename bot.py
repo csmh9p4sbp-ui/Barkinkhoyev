@@ -487,12 +487,16 @@ async def ask_ai(prompt):
             "Но бот продолжает работать: можно учить слова и проходить тестирование."
         )
         async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
 
     load_user_words(user_id)
 
     settings = load_user_settings(user_id)
-    already_started = bool(settings.get("started", False))
+
+    already_started = bool(
+        settings.get("started", False)
+    )
 
     text = (
         "Ассаляму алейкум! 📖\n\n"
@@ -504,16 +508,26 @@ async def ask_ai(prompt):
     )
 
     if already_started:
-        text += "Ты уже начал обучение. Продолжай изучение по карточкам ниже."
+
+        text += (
+            "Ты уже начал обучение. "
+            "Продолжай изучение по карточкам ниже."
+        )
+
     else:
-        text += "Чтобы начать изучение, нажми «Отправь новое слово»."
+
+        text += (
+            "Чтобы начать изучение, "
+            "нажми «Отправь новое слово»."
+        )
 
     await safe_send_message(
         context.bot,
         update.effective_chat.id,
         text,
-        reply_markup=main_menu(show_new_word=not already_started)
-    )
+        reply_markup=main_menu(
+            show_new_word=not already_started
+        )
 
 
 async def send_quiz_offer(user_id, chat_id, bot):
