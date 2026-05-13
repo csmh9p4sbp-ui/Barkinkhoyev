@@ -26,8 +26,6 @@ from telegram.ext import (
     filters,
 )
 
-# ================== НАСТРОЙКИ ==================
-
 WORDS_FILE = "words.csv"
 USERS_DIR = "users"
 CARDS_DIR = "cards"
@@ -36,14 +34,13 @@ ARABIC_FONT_FILE = "NotoNaskhArabic-Regular.ttf"
 
 AI_COOLDOWN_SECONDS = 12
 LAST_AI_REQUESTS = {}
-
 MAX_MESSAGE_LENGTH = 3500
 
 os.makedirs(USERS_DIR, exist_ok=True)
 os.makedirs(CARDS_DIR, exist_ok=True)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
@@ -59,8 +56,6 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 
-# ================== БЕЗОПАСНЫЕ TELEGRAM-ФУНКЦИИ ==================
-
 async def safe_send_message(bot, chat_id, text, reply_markup=None):
     try:
         return await bot.send_message(
@@ -71,7 +66,11 @@ async def safe_send_message(bot, chat_id, text, reply_markup=None):
     except RetryAfter as e:
         await asyncio.sleep(int(e.retry_after) + 1)
         try:
-            return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup
+            )
         except Exception as err:
             logger.warning(f"Ошибка повторной отправки сообщения: {err}")
     except (TimedOut, NetworkError) as e:
@@ -94,20 +93,22 @@ async def safe_send_photo(bot, chat_id, photo, caption=None, reply_markup=None):
         await asyncio.sleep(int(e.retry_after) + 1)
         try:
             photo.seek(0)
-            return await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption, reply_markup=reply_markup)
+            return await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=caption,
+                reply_markup=reply_markup
+            )
         except Exception as err:
             logger.warning(f"Ошибка повторной отправки фото: {err}")
     except (TimedOut, NetworkError) as e:
         logger.warning(f"Telegram timeout/network при отправке фото: {e}")
-        try:
-            await safe_send_message(
-                bot,
-                chat_id,
-                caption or "Слово отправлено, но картинка временно не загрузилась.",
-                reply_markup=reply_markup
-            )
-        except Exception:
-            pass
+        await safe_send_message(
+            bot,
+            chat_id,
+            caption or "Слово отправлено, но картинка временно не загрузилась.",
+            reply_markup=reply_markup
+        )
     except TelegramError as e:
         logger.warning(f"Telegram error при отправке фото: {e}")
     except Exception as e:
@@ -145,8 +146,6 @@ async def send_long_message(bot, chat_id, text):
         await safe_send_message(bot, chat_id, text[i:i + MAX_MESSAGE_LENGTH])
 
 
-# ================== ФАЙЛЫ И ДАННЫЕ ==================
-
 def get_user_words_file(user_id):
     return os.path.join(USERS_DIR, f"{user_id}_words.csv")
 
@@ -161,7 +160,15 @@ def load_json_file(path, default):
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            merged = default.copy()
+            merged.update(data)
+            return merged
+
+        return default
+
     except Exception as e:
         logger.warning(f"Ошибка чтения JSON {path}: {e}")
         return default
@@ -178,7 +185,10 @@ def save_json_file(path, data):
 def load_user_settings(user_id):
     return load_json_file(
         get_user_settings_file(user_id),
-        {"last_quiz_offer_count": 0}
+        {
+            "last_quiz_offer_count": 0,
+            "started": False
+        }
     )
 
 
@@ -256,8 +266,6 @@ def save_user_words(user_id, df):
     except Exception as e:
         logger.warning(f"Ошибка сохранения words пользователя: {e}")
 
-
-# ================== КАРТОЧКИ ==================
 
 def get_arabic_font_path():
     if os.path.exists(ARABIC_FONT_FILE):
@@ -400,15 +408,20 @@ def create_word_card(arabic_word, russian_word=None):
         return bio
 
 
-# ================== МЕНЮ И ИИ ==================
+def main_menu(show_new_word=True):
+    buttons = []
 
-def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Отправь новое слово", callback_data="cmd_word")],
+    if show_new_word:
+        buttons.append([
+            InlineKeyboardButton("📖 Отправь новое слово", callback_data="cmd_word")
+        ])
+
+    buttons.extend([
         [InlineKeyboardButton("📋 Тестирование", callback_data="cmd_testing")],
         [InlineKeyboardButton("✅ Выученные", callback_data="cmd_learned")],
-        [InlineKeyboardButton("🔄 Начать заново", callback_data="cmd_reset")],
     ])
+
+    return InlineKeyboardMarkup(buttons)
 
 
 def build_teacher_prompt(user_question, last_word=None):
@@ -473,35 +486,39 @@ async def ask_ai(prompt):
             "Сейчас ИИ-учитель временно недоступен. "
             "Но бот продолжает работать: можно учить слова и проходить тестирование."
         )
-
-
-# ================== START / WORD ==================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     load_user_words(user_id)
+
+    settings = load_user_settings(user_id)
+    already_started = bool(settings.get("started", False))
 
     text = (
         "Ассаляму алейкум! 📖\n\n"
-        "Этот бот помогает заучивать часто встречающиеся слова Корана.\n\n"
-        "📖 Отправляет слова в красивых карточках\n"
-        "📋 Проводит тестирование по выученным словам\n"
-        "🔁 Возвращает забытые слова на повторение\n"
-        "📑 Отвечает на вопросы по арабскому языку\n"
-        "📊 Сохраняет личный прогресс каждого пользователя\n\n"
-        "После первых 5 выученных слов бот предложит пройти первое тестирование."
+        "Добро пожаловать в бот для заучивания слов из Священного Корана.\n\n"
+        "Бот помогает постепенно запоминать часто встречающиеся слова Корана через карточки, повторение и тестирование.\n\n"
+        "📖 Слова приходят в карточках\n"
+        "📋 По мере заучивания бот предлагает проверить твои знания\n"
+        "📑 Можно задать вопрос ИИ ассистенту прямо в чате или нажать «📑 Объяснить слово», ИИ расскажет о слове\n\n"
     )
+
+    if already_started:
+        text += "Ты уже начал обучение. Продолжай изучение по карточкам ниже."
+    else:
+        text += "Чтобы начать изучение, нажми «Отправь новое слово»."
 
     await safe_send_message(
         context.bot,
         update.effective_chat.id,
         text,
-        reply_markup=main_menu()
+        reply_markup=main_menu(show_new_word=not already_started)
     )
 
 
 async def send_quiz_offer(user_id, chat_id, bot):
     df = load_user_words(user_id)
+
     learned_count = int(df["learned"].sum())
 
     if learned_count < 5:
@@ -524,7 +541,12 @@ async def send_quiz_offer(user_id, chat_id, bot):
         options.append(learned_count)
 
     buttons = [
-        [InlineKeyboardButton(f"📋 Проверить {count} слов", callback_data=f"quiz_start_{count}")]
+        [
+            InlineKeyboardButton(
+                f"📋 Проверить {count} слов",
+                callback_data=f"quiz_start_{count}"
+            )
+        ]
         for count in options
     ]
 
@@ -537,37 +559,55 @@ async def send_quiz_offer(user_id, chat_id, bot):
 
 
 async def maybe_offer_quiz(user_id, chat_id, bot, learned_count):
+
     if learned_count < 5:
         return
 
     settings = load_user_settings(user_id)
+
     last_offer = int(settings.get("last_quiz_offer_count", 0))
 
     should_offer = False
 
     if last_offer < 5 <= learned_count:
         should_offer = True
+
     elif learned_count - last_offer >= 10:
         should_offer = True
 
     if should_offer:
         settings["last_quiz_offer_count"] = learned_count
+
         save_user_settings(user_id, settings)
-        await send_quiz_offer(user_id, chat_id, bot)
+
+        await send_quiz_offer(
+            user_id,
+            chat_id,
+            bot
+        )
 
 
 async def send_new_word(user_id, chat_id, bot, context=None):
+
     df = load_user_words(user_id)
 
     if df.empty:
-        await safe_send_message(bot, chat_id, "Словарь пока пуст. Добавь слова в words.csv.")
+        await safe_send_message(
+            bot,
+            chat_id,
+            "Словарь пока пуст."
+        )
         return
 
     today = datetime.now().replace(microsecond=0)
 
     due = df[
         (df["learned"]) &
-        (df["last_review"] + pd.to_timedelta(df["interval"], unit="D") <= today)
+        (
+            df["last_review"] +
+            pd.to_timedelta(df["interval"], unit="D")
+            <= today
+        )
     ]
 
     new_words = df[~df["learned"]]
@@ -578,10 +618,15 @@ async def send_new_word(user_id, chat_id, bot, context=None):
     ])
 
     if pool.empty:
-        await safe_send_message(bot, chat_id, "🎉 Все слова на сегодня пройдены!")
+        await safe_send_message(
+            bot,
+            chat_id,
+            "🎉 Все слова на сегодня пройдены!"
+        )
         return
 
     word = pool.iloc[0]
+
     idx = word.name
 
     arabic = str(word["كلمة"])
@@ -597,14 +642,41 @@ async def send_new_word(user_id, chat_id, bot, context=None):
     buttons = []
 
     if bool(word["learned"]):
-        buttons.append([InlineKeyboardButton("💡 Помню", callback_data=f"remember_{idx}")])
-        buttons.append([InlineKeyboardButton("❌ Не помню", callback_data=f"forgot_{idx}")])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "💡 Помню",
+                callback_data=f"remember_{idx}"
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "❌ Не помню",
+                callback_data=f"forgot_{idx}"
+            )
+        ])
+
     else:
-        buttons.append([InlineKeyboardButton("✅ Выучено", callback_data=f"learned_{idx}")])
 
-    buttons.append([InlineKeyboardButton("📑 Объяснить слово", callback_data=f"explain_{idx}")])
+        buttons.append([
+            InlineKeyboardButton(
+                "✅ Выучено",
+                callback_data=f"learned_{idx}"
+            )
+        ])
 
-    card = create_word_card(arabic, russian)
+    buttons.append([
+        InlineKeyboardButton(
+            "📑 Объяснить слово",
+            callback_data=f"explain_{idx}"
+        )
+    ])
+
+    card = create_word_card(
+        arabic,
+        russian
+    )
 
     await safe_send_photo(
         bot,
@@ -616,6 +688,16 @@ async def send_new_word(user_id, chat_id, bot, context=None):
 
 
 async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    settings = load_user_settings(update.effective_user.id)
+
+    settings["started"] = True
+
+    save_user_settings(
+        update.effective_user.id,
+        settings
+    )
+
     await send_new_word(
         update.effective_user.id,
         update.effective_chat.id,
@@ -624,24 +706,33 @@ async def daily_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ================== ТЕСТИРОВАНИЕ ==================
-
 async def start_quiz(user_id, chat_id, bot, context, count):
+
     df = load_user_words(user_id)
+
     learned_words = df[df["learned"]]
 
     if len(learned_words) < 5:
+
         await safe_send_message(
             bot,
             chat_id,
             "📋 Тестирование проводится только по выученным словам.\n\nСначала выучи хотя бы 5 слов."
         )
+
         return
 
-    learned_words = sort_by_quran_frequency(learned_words)
-    count = min(count, len(learned_words))
+    learned_words = sort_by_quran_frequency(
+        learned_words
+    )
+
+    count = min(
+        count,
+        len(learned_words)
+    )
 
     quiz_df = learned_words.head(count).copy()
+
     quiz_df["_idx"] = quiz_df.index
 
     context.user_data["quiz_session"] = {
@@ -653,10 +744,16 @@ async def start_quiz(user_id, chat_id, bot, context, count):
         "current_options": [],
     }
 
-    await send_next_quiz_question(user_id, chat_id, bot, context)
+    await send_next_quiz_question(
+        user_id,
+        chat_id,
+        bot,
+        context
+    )
 
 
 async def finish_quiz(user_id, chat_id, bot, context):
+
     session = context.user_data.get("quiz_session")
 
     if not session:
@@ -667,10 +764,13 @@ async def finish_quiz(user_id, chat_id, bot, context):
     wrong = session["wrong"]
 
     if wrong:
+
         df = load_user_words(user_id)
 
         for item in wrong:
+
             idx = item.get("idx")
+
             if idx in df.index:
                 df.at[idx, "learned"] = False
                 df.at[idx, "last_review"] = pd.NaT
@@ -678,31 +778,55 @@ async def finish_quiz(user_id, chat_id, bot, context):
 
         save_user_words(user_id, df)
 
-    text = f"📋 Тестирование завершено!\n\n✅ Правильных ответов: {correct} из {total}"
+    text = (
+        f"📋 Тестирование завершено!\n\n"
+        f"✅ Правильных ответов: {correct} из {total}"
+    )
 
     if wrong:
+
         text += "\n\n❌ Слова для повторного изучения:\n"
+
         for item in wrong:
             text += f"{item['arabic']} — {item['russian']}\n"
-        text += "\nЭти слова снова будут приходить для повторного изучения."
+
+        text += (
+            "\nЭти слова снова будут приходить "
+            "для повторного изучения."
+        )
+
     else:
         text += "\n\n🎉 Отлично! Ошибок нет."
 
     context.user_data.pop("quiz_session", None)
-    await send_long_message(bot, chat_id, text)
+
+    await send_long_message(
+        bot,
+        chat_id,
+        text
+    )
 
 
 async def send_next_quiz_question(user_id, chat_id, bot, context):
+
     session = context.user_data.get("quiz_session")
 
     if not session:
         return
 
     if session["current"] >= session["total"]:
-        await finish_quiz(user_id, chat_id, bot, context)
+
+        await finish_quiz(
+            user_id,
+            chat_id,
+            bot,
+            context
+        )
+
         return
 
     df = load_user_words(user_id)
+
     question = session["words"][session["current"]]
 
     correct_answer = str(question["слово"])
@@ -716,15 +840,26 @@ async def send_next_quiz_question(user_id, chat_id, bot, context):
         .tolist()
     )
 
-    wrong_answers = random.sample(wrong_pool, min(3, len(wrong_pool)))
+    wrong_answers = random.sample(
+        wrong_pool,
+        min(3, len(wrong_pool))
+    )
+
     options = wrong_answers + [correct_answer]
+
     random.shuffle(options)
 
     session["current_options"] = options
+
     context.user_data["quiz_session"] = session
 
     buttons = [
-        [InlineKeyboardButton(option, callback_data=f"quiz_answer_{i}")]
+        [
+            InlineKeyboardButton(
+                option,
+                callback_data=f"quiz_answer_{i}"
+            )
+        ]
         for i, option in enumerate(options)
     ]
 
@@ -734,29 +869,46 @@ async def send_next_quiz_question(user_id, chat_id, bot, context):
         bot,
         chat_id,
         card,
-        caption=f"📋 Вопрос {session['current'] + 1} из {session['total']}\nВыбери правильный перевод:",
+        caption=(
+            f"📋 Вопрос "
+            f"{session['current'] + 1} "
+            f"из {session['total']}\n"
+            f"Выбери правильный перевод:"
+        ),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
 async def handle_quiz_answer(user_id, chat_id, selected_index, query, context):
+
     session = context.user_data.get("quiz_session")
 
     if not session:
-        await safe_send_message(context.bot, chat_id, "Тестирование устарело. Начни заново.")
+
+        await safe_send_message(
+            context.bot,
+            chat_id,
+            "Тестирование устарело. Начни заново."
+        )
+
         return
 
     try:
         selected = session["current_options"][int(selected_index)]
+
     except Exception:
         selected = ""
 
     question = session["words"][session["current"]]
+
     correct_answer = str(question["слово"])
 
     if selected == correct_answer:
+
         session["correct"] += 1
+
     else:
+
         session["wrong"].append({
             "idx": question.get("_idx"),
             "arabic": str(question["كلمة"]),
@@ -765,40 +917,79 @@ async def handle_quiz_answer(user_id, chat_id, selected_index, query, context):
         })
 
     session["current"] += 1
+
     context.user_data["quiz_session"] = session
 
     await safe_delete_message(query.message)
-    await send_next_quiz_question(user_id, chat_id, context.bot, context)
 
+    await send_next_quiz_question(
+        user_id,
+        chat_id,
+        context.bot,
+        context
+    )
 
-# ================== КНОПКИ ==================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
+
     await safe_query_answer(query)
 
     user_id = query.from_user.id
     chat_id = query.message.chat_id
     data = query.data
+
     today = datetime.now().replace(microsecond=0)
 
     try:
+
         df = load_user_words(user_id)
 
         if data.startswith("quiz_start_"):
-            count = int(data.replace("quiz_start_", "", 1))
+
+            count = int(
+                data.replace("quiz_start_", "", 1)
+            )
+
             await safe_delete_message(query.message)
-            await start_quiz(user_id, chat_id, context.bot, context, count)
+
+            await start_quiz(
+                user_id,
+                chat_id,
+                context.bot,
+                context,
+                count
+            )
 
         elif data.startswith("quiz_answer_"):
-            selected_index = data.replace("quiz_answer_", "", 1)
-            await handle_quiz_answer(user_id, chat_id, selected_index, query, context)
+
+            selected_index = data.replace(
+                "quiz_answer_",
+                "",
+                1
+            )
+
+            await handle_quiz_answer(
+                user_id,
+                chat_id,
+                selected_index,
+                query,
+                context
+            )
 
         elif data.startswith("explain_"):
+
             idx = int(data.split("_")[1])
 
             if idx not in df.index:
-                await safe_send_message(context.bot, chat_id, "Ошибка: слово не найдено.")
+
+                await safe_send_message(
+                    context.bot,
+                    chat_id,
+                    "Ошибка: слово не найдено."
+                )
+
                 return
 
             word = df.loc[idx]
@@ -809,100 +1000,188 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "idx": int(idx),
             }
 
-            await safe_send_message(context.bot, chat_id, "📑 Объясняю слово...")
+            await safe_send_message(
+                context.bot,
+                chat_id,
+                "📑 Объясняю слово..."
+            )
 
             prompt = build_teacher_prompt(
-                f"Объясни слово {word['كلمة']} — {word['слово']}. "
-                "Дай значение, корень если знаешь, и короткую ассоциацию.",
+                (
+                    f"Объясни слово "
+                    f"{word['كلمة']} — "
+                    f"{word['слово']}. "
+                    f"Дай значение, "
+                    f"корень если знаешь, "
+                    f"и короткую ассоциацию."
+                ),
                 context.user_data["last_word"],
             )
 
             answer = await ask_ai(prompt)
-            await send_long_message(context.bot, chat_id, answer)
 
-        elif data.startswith("learned_") or data.startswith("remember_") or data.startswith("forgot_"):
+            await send_long_message(
+                context.bot,
+                chat_id,
+                answer
+            )
+
+        elif (
+            data.startswith("learned_") or
+            data.startswith("remember_") or
+            data.startswith("forgot_")
+        ):
+
             idx = int(data.split("_")[1])
 
             if idx not in df.index:
-                await safe_send_message(context.bot, chat_id, "Ошибка: слово не найдено.")
+
+                await safe_send_message(
+                    context.bot,
+                    chat_id,
+                    "Ошибка: слово не найдено."
+                )
+
                 return
 
             if data.startswith("learned_"):
+
                 df.at[idx, "learned"] = True
                 df.at[idx, "last_review"] = today
                 df.at[idx, "interval"] = 1
 
             elif data.startswith("remember_"):
+
                 old_interval = int(df.at[idx, "interval"])
+
                 df.at[idx, "last_review"] = today
-                df.at[idx, "interval"] = min(old_interval * 2, 30)
+
+                df.at[idx, "interval"] = min(
+                    old_interval * 2,
+                    30
+                )
 
             elif data.startswith("forgot_"):
+
                 df.at[idx, "learned"] = False
                 df.at[idx, "last_review"] = pd.NaT
                 df.at[idx, "interval"] = 1
 
             save_user_words(user_id, df)
+
+            settings = load_user_settings(user_id)
+
+            settings["started"] = True
+
+            save_user_settings(user_id, settings)
+
             await safe_delete_message(query.message)
 
             updated_df = load_user_words(user_id)
-            learned_count = int(updated_df["learned"].sum())
 
-            await maybe_offer_quiz(user_id, chat_id, context.bot, learned_count)
-            await send_new_word(user_id, chat_id, context.bot, context)
+            learned_count = int(
+                updated_df["learned"].sum()
+            )
+
+            await maybe_offer_quiz(
+                user_id,
+                chat_id,
+                context.bot,
+                learned_count
+            )
+
+            await send_new_word(
+                user_id,
+                chat_id,
+                context.bot,
+                context
+            )
 
         elif data == "cmd_word":
-            await send_new_word(user_id, chat_id, context.bot, context)
+
+            settings = load_user_settings(user_id)
+
+            settings["started"] = True
+
+            save_user_settings(user_id, settings)
+
+            await safe_delete_message(query.message)
+
+            await send_new_word(
+                user_id,
+                chat_id,
+                context.bot,
+                context
+            )
 
         elif data == "cmd_testing":
-            await send_quiz_offer(user_id, chat_id, context.bot)
+
+            await send_quiz_offer(
+                user_id,
+                chat_id,
+                context.bot
+            )
 
         elif data == "cmd_learned":
+
             learned_words = df[df["learned"]]
 
             if learned_words.empty:
-                await safe_send_message(context.bot, chat_id, "Вы пока не выучили ни одного слова.")
+
+                await safe_send_message(
+                    context.bot,
+                    chat_id,
+                    "Вы пока не выучили ни одного слова."
+                )
+
             else:
+
                 text = "✅ Ваши выученные слова:\n\n"
+
                 for _, r in learned_words.iterrows():
                     text += f"{r['слово']} — {r['كلمة']}\n"
-                await send_long_message(context.bot, chat_id, text)
 
-        elif data == "cmd_reset":
-            df["learned"] = False
-            df["last_review"] = pd.NaT
-            df["interval"] = 1
-            save_user_words(user_id, df)
-
-            settings = load_user_settings(user_id)
-            settings["last_quiz_offer_count"] = 0
-            save_user_settings(user_id, settings)
-
-            context.user_data.pop("quiz_session", None)
-
-            await safe_send_message(context.bot, chat_id, "🔄 Прогресс сброшен.")
+                await send_long_message(
+                    context.bot,
+                    chat_id,
+                    text
+                )
 
     except TimedOut:
         logger.warning("TimedOut в button_handler")
         return
+
     except NetworkError as e:
         logger.warning(f"NetworkError в button_handler: {e}")
         return
+
     except Exception as e:
-        logger.warning(f"Ошибка в button_handler: {e}")
-        await safe_send_message(context.bot, chat_id, "Произошла ошибка. Попробуй ещё раз.")
 
+        logger.warning(
+            f"Ошибка в button_handler: {e}"
+        )
 
-# ================== ТЕКСТОВЫЕ ВОПРОСЫ К ИИ ==================
+        await safe_send_message(
+            context.bot,
+            chat_id,
+            "Произошла ошибка. Попробуй ещё раз."
+        )
+
 
 async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
+
     now = datetime.now().timestamp()
 
     last_time = LAST_AI_REQUESTS.get(user_id, 0)
 
     if now - last_time < AI_COOLDOWN_SECONDS:
-        await update.message.reply_text("⏳ Подожди немного перед следующим вопросом.")
+
+        await update.message.reply_text(
+            "⏳ Подожди немного перед следующим вопросом."
+        )
+
         return
 
     LAST_AI_REQUESTS[user_id] = now
@@ -912,20 +1191,32 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    await update.message.reply_text("📑 Думаю над ответом...")
+    await update.message.reply_text(
+        "📑 Думаю над ответом..."
+    )
 
     last_word = context.user_data.get("last_word")
-    prompt = build_teacher_prompt(user_text, last_word)
+
+    prompt = build_teacher_prompt(
+        user_text,
+        last_word
+    )
+
     answer = await ask_ai(prompt)
 
-    await send_long_message(context.bot, update.effective_chat.id, answer)
+    await send_long_message(
+        context.bot,
+        update.effective_chat.id,
+        answer
+    )
 
 
 async def error_handler(update, context):
-    logger.warning(f"Глобальная ошибка: {context.error}")
 
+    logger.warning(
+        f"Глобальная ошибка: {context.error}"
+    )
 
-# ================== ЗАПУСК ==================
 
 app = (
     ApplicationBuilder()
@@ -939,12 +1230,21 @@ app = (
 )
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("word", daily_word))
-app.add_handler(CallbackQueryHandler(button_handler))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_text_handler))
-app.add_error_handler(error_handler)
 
-logger.info("Бот запущен.")
+app.add_handler(CommandHandler("word", daily_word))
+
+app.add_handler(
+    CallbackQueryHandler(button_handler)
+)
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        ai_text_handler
+    )
+)
+
+app.add_error_handler(error_handler)
 
 app.run_polling(
     drop_pending_updates=True,
